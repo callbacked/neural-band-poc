@@ -1,6 +1,6 @@
 connects the meta neural band to my mac by copying the pairing process from the app
 
-NO sEMG/GESTURE DATA CAN BE READ, JUST DOES THE INITIAL PAIRING PROCESS (it is useless)
+NO sEMG/GESTURE DATA CAN BE READ, JUST DOES THE INITIAL PAIRING PROCESS (i.e. it is useless)
 
 
 sniffing:
