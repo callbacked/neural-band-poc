@@ -32,6 +32,8 @@ training a model for more hand gestures and even better hand tracking (as in, yo
 
 ## still figuring out
 
+also i'm right handed so i have not yet explored how this would fare for left handed people
+
 raw readings are experimental adc values. voltage scaling and electrode mapping aren't verified, and some data gets dropped. semg and gestures run separately for now since running both made things lag.
 
 the hand shows recognized taps, holds and swipes. it isn't tracking every finger joint, and ring/pinky gestures aren't supported (same behavior when used natively with the glasses so it's probably not trained on those gestures) the dial only changes the number in the console.
