@@ -88,16 +88,32 @@ class DashboardTests(unittest.TestCase):
                     settle()
                     probe = commands[-1]
                     self.assertIn(band['address'], probe)
+                    self.assertNotIn('--hand', probe)
                     self.assertEqual(probe[probe.index('--stream-control')+1], 'dial')
                     self.assertIn('--dial-settings', probe)
                     self.assertIsNone(request('/api/state')[1]['error'])
+                    for invalid in ({'hand':'ambidextrous'}, {'hand':True}, {'hand':'left','extra':1}, {}):
+                        self.assertEqual(request('/api/hand', invalid)[0], 400)
+                    self.assertEqual(request('/api/hand', {'hand':'left'}), (200, {'requested_hand':'left'}))
+                    self.assertEqual(request('/api/interaction')[1]['requested_hand'], 'left')
+                    self.assertNotIn('hand', request('/api/interaction')[1])
                     self.assertEqual(request('/api/start', {'mode':'raw-emg'})[0], 202)
                     settle()
                     probe = commands[-1]
                     self.assertEqual(probe[probe.index('--stream-control')+1], 'raw-emg')
                     self.assertEqual(probe[probe.index('--seconds')+1], '60')
                     self.assertNotIn('--dial-settings', probe)
+                    self.assertEqual(probe[probe.index('--hand')+1], 'left')
+                    self.assertEqual(request('/api/hand', {'hand':'right'})[0], 200)
+                    self.assertEqual(request('/api/start', {'mode':'dial'})[0], 202)
+                    settle()
+                    self.assertEqual(commands[-1][commands[-1].index('--hand')+1], 'right')
+                    self.assertEqual(request('/api/hand', {'hand':None})[0], 200)
+                    self.assertEqual(request('/api/start', {'mode':'dial'})[0], 202)
+                    settle()
+                    self.assertNotIn('--hand', commands[-1])
                     dashboard.running = True
+                    self.assertEqual(request('/api/hand', {'hand':'left'})[0], 400)
                     self.assertEqual(request('/api/select-band', {'identifier':band['address']})[0], 400)
             finally:
                 server.shutdown()

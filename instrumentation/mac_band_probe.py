@@ -50,8 +50,17 @@ def typed_frame(channel, words, payload=b""):
 
 
 class BandHandshake:
-    def __init__(self, emit, query_device_info=False, end_link_setup=False, stream_control=None, query_config=False):
+    def __init__(self, emit, query_device_info=False, end_link_setup=False, stream_control=None, query_config=False,
+                 hand=None, clock=time.monotonic):
+        if hand not in (None, "left", "right"):
+            raise ValueError("Hand must be left or right")
         self.emit = emit
+        self.clock = clock
+        self.requested_hand = hand
+        self.hand = self.hand_error = None
+        self.config_request = None
+        self.config_id = 4
+        self.config_outgoing = bytearray()
         self.private = ec.generate_private_key(ec.SECP256R1())
         self.public = self.private.public_key().public_bytes(
             serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)[1:]
@@ -63,13 +72,70 @@ class BandHandshake:
         self.authenticated_packets = 0
         self.query_sent = False
         self.query_device_info = query_device_info
-        self.end_link_setup = end_link_setup or stream_control is not None or query_config
+        self.end_link_setup = end_link_setup or stream_control is not None or query_config or hand is not None
         self.stream_control = stream_control
-        self.query_config = query_config
+        self.query_config = query_config or stream_control == "dial" or hand is not None
         self.rpc_channels = set()
         self.tx_keys = None
         self.stream_fields = (3, 6, 8) if stream_control == "dial" else (2,)
-        self.input_service = InputService(emit, requested_fields=self.stream_fields)
+        self.input_service = InputService(self.receive_input, requested_fields=self.stream_fields)
+
+    def request_config(self, stage):
+        self.config_id += 1
+        self.config_request = (self.config_id, stage, self.clock() + 5)
+        # ConfigReq field 10 is is_left_handed. Leave all other settings absent.
+        config = field(10, int(self.requested_hand == "left")) if stage == "write" else b""
+        payload = field(1, self.config_id) + field(5, config)
+        channel = 0x8007
+        if channel in self.rpc_channels:
+            frame = len(payload).to_bytes(2, "big") + channel.to_bytes(2, "big") + payload
+        else:
+            self.rpc_channels.add(channel)
+            frame = typed_frame(channel, [0x8100ce56, 0x02000314], payload)
+        self.emit("config_request_queued", request_id=self.config_id, stage=stage,
+                  hand=self.requested_hand if stage == "write" else None)
+        return self.encrypt_frame(frame)
+
+    def fail_hand(self, message):
+        self.config_request = None
+        self.hand, self.hand_error = None, message
+        if self.input_service.interaction:
+            self.input_service.interaction.set_hand(None, message)
+        self.emit("handedness_failed", message=message)
+
+    def tick(self):
+        if self.config_request and self.clock() >= self.config_request[2]:
+            self.fail_hand("Band hand confirmation timed out")
+        self.input_service.tick()
+
+    def receive_input(self, event, **data):
+        self.emit(event, **data)
+        if event != "input_rpc_response" or not self.config_request:
+            return
+        request_id, stage, deadline = self.config_request
+        if data["channel"] & 0x7fff != 7 or data["request_id"] != request_id:
+            return
+        if self.clock() >= deadline:
+            self.fail_hand("Band hand confirmation timed out")
+        elif data["status"] != 1:
+            self.fail_hand("Band rejected the hand configuration request")
+        elif stage == "write":
+            # An acknowledgement is not evidence that the setting stuck.
+            self.config_outgoing.extend(self.request_config("verify"))
+        elif data["is_left_handed"] not in (0, 1):
+            self.fail_hand("Band did not report a valid hand setting")
+        else:
+            actual = "left" if data["is_left_handed"] else "right"
+            if stage == "read" and self.requested_hand is not None and actual != self.requested_hand:
+                self.config_outgoing.extend(self.request_config("write"))
+            elif stage == "verify" and actual != self.requested_hand:
+                self.fail_hand(f"Band still reports {actual} hand after the change")
+            else:
+                self.config_request = None
+                self.hand = actual
+                if self.input_service.interaction:
+                    self.input_service.interaction.set_hand(actual)
+                self.emit("handedness_confirmed", hand=actual)
 
     def encrypt_frame(self, frame):
         if self.tx_keys is None:
@@ -161,9 +227,7 @@ class BandHandshake:
                     outgoing.extend(self.encrypt_frame(query))
                     self.emit("device_info_query_queued", service=0xce56, message_type=0x314)
                 if self.query_config:
-                    query = typed_frame(0x8007, [0x8100ce56, 0x02000314], field(1, 5) + field(5, b""))
-                    outgoing.extend(self.encrypt_frame(query))
-                    self.emit("config_query_queued", request_id=5)
+                    outgoing.extend(self.request_config("read"))
                 if self.stream_control:
                     outgoing.extend(self.stream_request(0x8005, 2))
                     if self.stream_control in ("raw-emg", "dial"):
@@ -178,6 +242,8 @@ class BandHandshake:
                     self.input_service.feed(record.plaintext)
                 else:
                     self.emit("unauthenticated_record", kind=record.kind, channel=record.channel, payload=record.payload.hex())
+        outgoing.extend(self.config_outgoing)
+        self.config_outgoing.clear()
         return bytes(outgoing)
 
     def finish(self):
@@ -265,7 +331,7 @@ def run_probe(args, emit):
     delegate.outgoing = bytearray()
     delegate.handshake = BandHandshake(emit, query_device_info=args.query_device_info,
                                        end_link_setup=args.end_link_setup, stream_control=args.stream_control,
-                                       query_config=args.query_config)
+                                       query_config=args.query_config, hand=args.hand)
     central = CBCentralManager.alloc().initWithDelegate_queue_(delegate, None)
     deadline = time.monotonic() + args.seconds
     stop_queued = False
@@ -296,7 +362,7 @@ def run_probe(args, emit):
                     delegate.handshake.input_service.interaction.configure(**settings)
                 except (OSError, ValueError, TypeError) as error:
                     raise ValueError(f"Invalid local dial settings: {error}") from error
-            delegate.handshake.input_service.tick()
+            delegate.handshake.tick()
             if stop_requested:
                 deadline = min(deadline, time.monotonic() + 3)
                 stop_requested = False
@@ -352,8 +418,11 @@ def run_probe(args, emit):
              streams_disabled_acknowledged=delegate.handshake.input_service.streams_disabled_acknowledged,
              motion_messages=delegate.handshake.input_service.motion_messages,
              gesture_messages=delegate.handshake.input_service.gesture_messages,
-             other_messages=delegate.handshake.input_service.other_messages)
+             other_messages=delegate.handshake.input_service.other_messages,
+             hand=delegate.handshake.hand, hand_error=delegate.handshake.hand_error)
         delegate.handshake.input_service.finish()
+        if args.hand is not None and delegate.handshake.hand != args.hand:
+            raise ValueError(delegate.handshake.hand_error or "Requested band hand was not confirmed")
         if args.stream_control in ("raw-emg", "dial") and not delegate.handshake.input_service.streams_disabled_acknowledged:
             raise ValueError("Disconnected without confirmation that all requested streams stopped")
         return bool(delegate.handshake.authenticated_packets)
@@ -380,6 +449,7 @@ if __name__ == "__main__":
     parser.add_argument("--stream-control", choices=("query", "raw-emg", "dial"),
                         help="query flags, raw EMG, or gestures/motion (dial); disables requested streams before the deadline")
     parser.add_argument("--query-config", action="store_true", help="read current input-service configuration; includes EndLinkSetup")
+    parser.add_argument("--hand", choices=("left", "right"), help="set the band hand and verify it with a separate read; omitted keeps the band setting")
     parser.add_argument("--output", type=Path, required=True, help="new local JSONL capture; includes session material")
     args = parser.parse_args()
     if not 1 <= args.seconds <= 300:

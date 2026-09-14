@@ -15,6 +15,7 @@ class PinchDialTests(unittest.TestCase):
         self.reader = InputService(lambda event, **data: self.states.append(data) if event == 'interaction_state' else None,
                                    requested_fields=(3,6,8))
         self.reader.interaction.clock = lambda: self.now
+        self.reader.interaction.set_hand('right')
         self.motion(0, 1)
 
     def wire(self, kind, payload):
@@ -43,6 +44,7 @@ class PinchDialTests(unittest.TestCase):
         self.gesture()
         self.motion(1000, 10)
         self.assertEqual(self.state()['value'], 57)
+
         self.gesture(action=0, derived=9)
         self.motion(1000, 10)
         self.assertEqual(self.state()['value'], 64)
@@ -53,6 +55,37 @@ class PinchDialTests(unittest.TestCase):
         self.gesture()
         self.motion(-1000, 10)
         self.assertEqual(self.state()['value'], 57)
+
+    def test_left_hand_reverses_only_dial_for_both_response_modes(self):
+        for response in ('direct', 'rate'):
+            values, rotations = [], []
+            for hand in ('right', 'left'):
+                self.setUp()
+                self.reader.interaction.set_hand(hand)
+                self.reader.interaction.configure(response=response)
+                self.gesture(finger=1, action=9)
+                self.assertEqual(self.state()['last_gesture']['action'], 'right')
+                self.gesture()
+                self.motion(1000, 20)
+                self.motion(0, 10)
+                values.append(self.state()['value'])
+                rotations.append(self.state()['rotation'])
+            self.assertGreater(values[0], 50)
+            self.assertEqual(values[1], 100-values[0])
+            self.assertEqual(rotations[0], rotations[1])
+
+    def test_unconfirmed_hand_cannot_turn_dial_and_confirmation_needs_a_new_pinch(self):
+        self.reader.interaction.set_hand(None)
+        self.gesture()
+        self.motion(1000, 10)
+        self.assertEqual(self.state()['value'], 50)
+        self.assertFalse(self.state()['engaged'])
+        self.reader.interaction.set_hand('left')
+        self.motion(1000, 10)
+        self.assertEqual(self.state()['value'], 50)
+        self.gesture()
+        self.motion(1000, 10)
+        self.assertEqual(self.state()['value'], 43)
 
     def test_synthetic_and_middle_presses_do_not_engage_index_dial(self):
         self.gesture(synthetic=1)

@@ -51,6 +51,7 @@ def session_view(rows, running=False):
               "l2cap_open": "Data channel open", "encryption_negotiated": "Fresh session keys negotiated",
               "identity_query_queued": "Certificate query queued", "device_info_query_queued": "Input-service query queued",
               "link_setup_end_queued": "Link setup completed", "config_query_queued": "Sensor configuration requested",
+              "config_request_queued": "Band configuration requested",
               "disconnected": "Bluetooth disconnected", "stream_ended": "Data channel closed"}
     for row in rows:
         event, at = row.get("event"), row.get("timestamp")
@@ -86,7 +87,9 @@ def session_view(rows, running=False):
             events.append({"at": at, "label": labels[event], "kind": "neutral"})
         elif event == "peer_setup":
             events.append({"at": at, "label": row["message"], "kind": "neutral"})
-        elif event in ("probe_error", "datax_incomplete"):
+        elif event == "handedness_confirmed":
+            events.append({"at": at, "label": f"Band hand confirmed: {row['hand']}", "kind": "verified"})
+        elif event in ("probe_error", "datax_incomplete", "handedness_failed"):
             events.append({"at": at, "label": row["message"], "kind": "error"})
     # The process owns the connection; saved logs cannot establish a live one.
     return {"connected": connected and running, "started_at": rows[0].get("timestamp") if rows else None,
@@ -125,6 +128,7 @@ class Dashboard:
         self.lock = threading.Lock()
         self.stop = threading.Event()
         self.running = False
+        self.requested_hand = None
         self.mode = "check"
         self.phase = "idle"
         self.error = None
@@ -175,7 +179,7 @@ class Dashboard:
 
     def interaction(self):
         with self.lock:
-            capture, running, mode = self.capture, self.running, self.mode
+            capture, running, mode, requested_hand = self.capture, self.running, self.mode, self.requested_hand
         data = read_json(capture.with_suffix(".live.json"), {}) if capture else {}
         # A saved pose or a stalled writer must never look like a live hold.
         at = data.get("timestamp")
@@ -183,9 +187,10 @@ class Dashboard:
         fresh = 0 <= age < .5
         live = running and mode == "dial" and fresh and data.get("motion_fresh", False)
         view = {k: data[k] for k in ("value", "engaged", "fingers", "rotation", "gesture_count", "steps",
-                                   "last_gesture", "reason", "orientation_kind", "timestamp") if k in data}
+                                   "last_gesture", "reason", "orientation_kind", "timestamp", "hand", "hand_error") if k in data}
         view.update(live=live, listening=running and mode == "dial", session=capture.name if capture else None,
-                    settings=dict(self.dial_settings), stream_mode=mode if running else None)
+                    settings=dict(self.dial_settings), stream_mode=mode if running else None,
+                    running=running, requested_hand=requested_hand)
         view['recent_gestures'] = [
             {**{k: gesture[k] for k in ('id', 'finger', 'action', 'derived_action', 'synthetic')},
              'age_ms': gesture['age_ms'] + round(age*1000)}
@@ -194,6 +199,14 @@ class Dashboard:
         if not live:
             view.update(engaged=False, fingers={"index": False, "middle": False})
         return view
+
+    def set_hand(self, hand):
+        if hand not in (None, 'left', 'right'):
+            raise ValueError('Choose left, right, or use the band setting')
+        with self.lock:
+            if self.running:
+                raise ValueError('Stop the current session before changing hands')
+            self.requested_hand = hand
 
     def select_device(self, identifier):
         with self.lock:
@@ -207,6 +220,8 @@ class Dashboard:
             temporary.write_text(json.dumps(selected))
             temporary.replace(self.selection_path)
             self.identifier, self.device_name = selected['address'], selected['name']
+            self.requested_hand = None
+            self.capture = None
             self.status_path.write_text('{}')
 
     def start(self, mode="dial"):
@@ -279,9 +294,11 @@ class Dashboard:
                 self.phase = "probing"
             command = [sys.executable, "-u", str(INSTRUMENTATION / "mac_band_probe.py"), self.identifier,
                        "--seconds", "300" if mode == "dial" else "60" if mode == "raw-emg" else "30", "--end-link-setup", "--query-device-info",
-                       "--output", str(self.capture)]
+                       "--query-config", "--output", str(self.capture)]
             if mode != "check":
                 command += ["--stream-control", mode]
+                if self.requested_hand is not None:
+                    command += ["--hand", self.requested_hand]
             if mode == "dial":
                 command += ["--dial-settings", str(self.dial_settings_path)]
             result = self._child(command, 340 if mode == "dial" else 100 if mode == "raw-emg" else 40)
@@ -348,12 +365,17 @@ def make_handler(dashboard):
                 return self.respond(403, {"error": "Same-origin localhost requests only"})
             if self.headers.get("Content-Type") != "application/json":
                 return self.respond(415, {"error": "JSON required"})
-            if self.path in ("/api/dial-settings", "/api/select-band", "/api/start"):
+            if self.path in ("/api/dial-settings", "/api/select-band", "/api/start", "/api/hand"):
                 try:
                     size = int(self.headers.get("Content-Length", "0"))
                     if not 0 < size <= 128:
                         raise ValueError("Invalid settings length")
                     settings = json.loads(self.rfile.read(size))
+                    if self.path == '/api/hand':
+                        if not isinstance(settings, dict) or set(settings) != {'hand'}:
+                            raise ValueError('Provide a hand setting')
+                        dashboard.set_hand(settings['hand'])
+                        return self.respond(200, {'requested_hand': dashboard.requested_hand})
                     if self.path == '/api/start':
                         if not isinstance(settings, dict) or set(settings) != {'mode'} or settings['mode'] not in ('dial', 'raw-emg'):
                             raise ValueError('Choose hand + dial or sEMG')

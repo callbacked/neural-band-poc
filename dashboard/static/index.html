@@ -40,8 +40,9 @@
           <p id="hand-loading" class="detail" role="status" hidden>Loading hand model…</p>
           <p id="hand-error" class="notice error" role="alert" hidden></p>
           <p id="recognized-event" class="recognized-event" role="status">Waiting for recognized input</p>
-          <div class="hand-controls"><label for="display-hand">Display hand</label><select id="display-hand"><option value="right">Right</option><option value="left">Left</option></select><button id="recenter-hand" class="quiet-button" type="button">Recenter view</button></div>
-          <p class="detail">The display setting mirrors the illustration. <a href="https://github.com/immersive-web/webxr-input-profiles/tree/main/packages/assets/profiles/generic-hand" target="_blank" rel="noreferrer">Hand mesh: WebXR Input Profiles</a> · MIT.</p>
+          <div class="hand-controls"><label for="band-hand">Band hand</label><select id="band-hand" disabled><option value="">Use band setting</option><option value="right">Right</option><option value="left">Left</option></select><button id="recenter-hand" class="quiet-button" type="button">Recenter view</button></div>
+          <p id="hand-setting-status" class="detail" role="status">Changes apply when you press Start.</p>
+          <p class="detail"><a href="https://github.com/immersive-web/webxr-input-profiles/tree/main/packages/assets/profiles/generic-hand" target="_blank" rel="noreferrer">Hand mesh: WebXR Input Profiles</a> · MIT.</p>
         </div>
         <div class="dial-panel">
           <p class="eyebrow">PINCH → TURN → RELEASE</p>

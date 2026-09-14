@@ -45,6 +45,9 @@ class InputService:
             if kind == 0x02000315:
                 fields = checked_fields(payload)
                 request_id, status = fields.get((1, 0)), fields.get((2, 0))
+                config = checked_fields(fields[6, 2]) if (6, 2) in fields else {}
+                self.emit("input_rpc_response", channel=channel, request_id=request_id, status=status,
+                          is_left_handed=config.get((10, 0)))
                 if (4, 2) in fields:
                     self.emit("device_info_received", request_id=request_id, status=status)
                 if (5, 2) in fields:
@@ -60,7 +63,6 @@ class InputService:
                         self.raw_enabled = False
                         self.disable_acknowledged = True
                 if (6, 2) in fields:
-                    config = checked_fields(fields[6, 2])
                     if status == 1 and (42, 2) in config:
                         emg = checked_fields(config[42, 2])
                         self.config = {"sample_rate": emg.get((1, 0)), "channels": emg.get((2, 0)),

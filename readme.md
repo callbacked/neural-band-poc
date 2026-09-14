@@ -22,6 +22,8 @@ open [localhost:8765](http://localhost:8765). put the band in pairing mode, hit 
 
 pick hand + dial for gestures, or semg for raw readings. hand sessions run for up to five minutes; semg runs for a minute. stop ends the session. captures stay local.
 
+left wrist works too. choose your band hand before starting, or leave it on use band setting. it checks the setting on the band and adjusts the dial direction. [wire details and cli](docs/handedness.md).
+
 ## what would be cool
 
 training a model for more hand gestures and even better hand tracking (as in, you can see your fingers articulate freely)
@@ -31,8 +33,6 @@ training a model for more hand gestures and even better hand tracking (as in, yo
 
 
 ## still figuring out
-
-also i'm right handed so i have not yet explored how this would fare for left handed people
 
 raw readings are experimental adc values. voltage scaling and electrode mapping aren't verified, and some data gets dropped. semg and gestures run separately for now since running both made things lag.
 
