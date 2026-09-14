@@ -8,6 +8,18 @@ setup and everyday use are in the [main readme](../readme.md). commands in these
 - [capture tools](capture-tools.md): direct mac commands and optional phone instrumentation.
 - [public integrations](public-integrations.md): a dated look at meta's glasses and research APIs.
 
+## code and checks
+
+`dashboard/` holds the server, static frontend, and console tests. `instrumentation/` holds the band clients, protocol code, and phone capture tools.
+
+```sh
+python3 -m unittest discover -s instrumentation -p 'test_*.py'
+python3 -m unittest discover -s dashboard/tests -p 'test_*.py'
+node dashboard/tests/test_gesture_animation.mjs
+node dashboard/tests/test_hand_model.mjs
+ruff check instrumentation dashboard
+```
+
 ## open work
 
 - verify ADC channel order, electrode mapping, and voltage scaling.

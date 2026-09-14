@@ -10,11 +10,13 @@ import sys
 import threading
 import time
 from urllib.parse import urlparse
-from band_access import band_available
-from pinch_dial import PinchDial
+from instrumentation.band_access import band_available
+from instrumentation.pinch_dial import PinchDial
 
 HERE = Path(__file__).resolve().parent
-CAPTURES = HERE.parent / "captures"
+ROOT = HERE.parent
+CAPTURES = ROOT / "captures"
+INSTRUMENTATION = ROOT / "instrumentation"
 
 
 def read_json(path, default):
@@ -233,7 +235,7 @@ class Dashboard:
     def _child(self, command, timeout):
         # Each Bluetooth subprocess gets a main thread and one hardware owner.
         with open(CAPTURES / "dashboard-worker.log", "a") as log:
-            process = subprocess.Popen(command, stdout=log, stderr=log, cwd=HERE.parent)
+            process = subprocess.Popen(command, stdout=log, stderr=log, cwd=ROOT)
             with self.lock:
                 self.process = process
             deadline = time.monotonic() + timeout
@@ -259,7 +261,7 @@ class Dashboard:
             if mode == 'scan':
                 scan_path = CAPTURES / 'dashboard-scan.json'
                 scan_path.unlink(missing_ok=True)
-                result = self._child([sys.executable, str(HERE / 'scan_band.py'), '--output', str(scan_path)], 20)
+                result = self._child([sys.executable, str(INSTRUMENTATION / 'scan_band.py'), '--output', str(scan_path)], 20)
                 if self.stop.is_set():
                     return
                 discovery = read_json(scan_path, {})
@@ -269,13 +271,13 @@ class Dashboard:
                     self.devices = discovery['devices']
                     self.scanned = True
                 return
-            self._child([sys.executable, str(HERE / "read_band_status.py"), self.identifier,
+            self._child([sys.executable, str(INSTRUMENTATION / "read_band_status.py"), self.identifier,
                          "--output", str(self.status_path)], 45)
             if self.stop.is_set():
                 return
             with self.lock:
                 self.phase = "probing"
-            command = [sys.executable, "-u", str(HERE / "mac_band_probe.py"), self.identifier,
+            command = [sys.executable, "-u", str(INSTRUMENTATION / "mac_band_probe.py"), self.identifier,
                        "--seconds", "300" if mode == "dial" else "60" if mode == "raw-emg" else "30", "--end-link-setup", "--query-device-info",
                        "--output", str(self.capture)]
             if mode != "check":
@@ -338,7 +340,7 @@ def make_handler(dashboard):
             if route not in assets:
                 return self.respond(404, {"error": "Not found"})
             name, content_type = assets[route]
-            self.respond(200, (HERE / "dashboard" / name).read_bytes(), content_type)
+            self.respond(200, (HERE / "static" / name).read_bytes(), content_type)
 
         def do_POST(self):
             origin = self.headers.get("Origin")

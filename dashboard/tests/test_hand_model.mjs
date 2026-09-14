@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { GLTFLoader } from './dashboard/vendor/GLTFLoader.js';
-import { Vector3, Box3 } from './dashboard/vendor/three.module.js';
-import { buildHandModel } from './dashboard/hand-model.js';
+import { GLTFLoader } from '../static/vendor/GLTFLoader.js';
+import { Vector3, Box3 } from '../static/vendor/three.module.js';
+import { buildHandModel } from '../static/hand-model.js';
 
-const file = readFileSync(new URL('./dashboard/models/right-hand.glb', import.meta.url));
+const file = readFileSync(new URL('../static/models/right-hand.glb', import.meta.url));
 const gltf = await new GLTFLoader().parseAsync(file.buffer.slice(file.byteOffset, file.byteOffset + file.byteLength), '');
 const model = buildHandModel(gltf.scene);
 const joints = {};
