@@ -34,7 +34,7 @@ training a model for hand gestures and even better hand tracking
 
 raw readings are experimental adc values. voltage scaling and electrode mapping aren't verified, and some data gets dropped. semg and gestures run separately for now since running both made things lag.
 
-the hand shows recognized taps, holds and swipes. it isn't tracking every finger joint, and ring/pinky gestures aren't supported yet. the dial only changes the number in the console.
+the hand shows recognized taps, holds and swipes. it isn't tracking every finger joint, and ring/pinky gestures aren't supported (same behavior when used natively with the glasses so it's probably not trained on those gestures) the dial only changes the number in the console.
 
 [findings](docs/findings.md) · [gesture references](docs/gestures.md) · [protocol notes](docs/protocol.md) · [capture tools](docs/capture-tools.md)
 
