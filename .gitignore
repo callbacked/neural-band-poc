@@ -1,0 +1,5 @@
+.claude
+__pycache__/
+captures/
+.venv/
+.DS_Store
