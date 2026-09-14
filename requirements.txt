@@ -1,0 +1,6 @@
+# Direct Mac client and offline protocol tools. Tested on macOS.
+bleak==2.0.0
+cryptography==46.0.3
+pyobjc-core==10.3.1
+pyobjc-framework-Cocoa==10.3.1
+pyobjc-framework-CoreBluetooth==10.3.1

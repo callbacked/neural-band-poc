@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Neural Band · Local console</title>
+  <link rel="stylesheet" href="/dashboard.css">
+  <script defer src="/dashboard.js"></script>
+  <script type="module" src="/hand.js"></script>
+</head>
+<body>
+  <main>
+    <header class="masthead">
+      <div><p class="eyebrow">NEURAL BAND / LOCAL CONSOLE</p><h1 id="device-name">Meta Neural Band</h1></div>
+      <div class="actions"><label class="detail" for="stream-mode">Stream</label><select id="stream-mode"><option value="dial">Hand + dial</option><option value="raw-emg">sEMG</option></select><button id="start-session" type="button">Start</button><button id="stop-check" class="secondary" type="button" hidden>Stop</button></div>
+    </header>
+    <div id="notice" class="notice" role="status" aria-live="polite">Loading saved observations…</div>
+    <details id="connection-setup" class="connection-setup">
+      <summary>Connect your band</summary>
+      <p>Put the band in pairing mode and keep it near your Mac. Find it below, choose it, then press Start. Allow Bluetooth access or pairing if macOS asks.</p>
+      <div class="hand-controls"><button id="scan-band" class="quiet-button" type="button">Find band</button><label for="band-choice">Band</label><select id="band-choice"><option value="">Choose a band</option></select><button id="run-check" class="quiet-button" type="button">Check connection</button></div>
+      <p id="band-discovery-status" class="detail" role="status">No band selected yet.</p>
+    </details>
+    <section class="stats" aria-label="Latest band readings">
+      <div class="stat"><span class="label">Connection</span><strong id="connection">Disconnected</strong><span id="connection-detail" class="detail">No active listener</span></div>
+      <div class="stat"><span class="label">Battery</span><strong id="battery">—</strong><span id="battery-detail" class="detail">No reading yet</span></div>
+      <div class="stat"><span class="label">Verified replies</span><strong id="verified">—</strong><span id="verified-detail" class="detail">Latest connection check</span></div>
+      <div class="stat"><span class="label">Firmware</span><strong id="firmware" class="firmware">—</strong><span class="detail">Reported by the band</span></div>
+    </section>
+    <div class="tabs" role="tablist" aria-label="Data source">
+      <button id="direct-tab" role="tab" aria-selected="true" aria-controls="direct-panel" type="button">Direct connection</button>
+      <button id="history-tab" role="tab" aria-selected="false" aria-controls="history-panel" type="button">Recorded pinches <span id="history-count">0</span></button>
+    </div>
+    <section id="direct-panel" role="tabpanel" aria-labelledby="direct-tab">
+      <section class="interaction-panel" aria-label="Hand and pinch dial">
+        <div class="hand-panel">
+          <div class="section-heading"><div><h2>Your 3D gesture hand</h2><p>Flat hand view · drag to orbit</p></div><span id="hand-state" class="badge">OFFLINE</span></div>
+          <canvas id="hand-canvas" width="700" height="420" tabindex="0" role="img" aria-label="Right hand model, waiting for live band data"></canvas>
+          <p id="hand-loading" class="detail" role="status" hidden>Loading hand model…</p>
+          <p id="hand-error" class="notice error" role="alert" hidden></p>
+          <p id="recognized-event" class="recognized-event" role="status">Waiting for recognized input</p>
+          <div class="hand-controls"><label for="display-hand">Display hand</label><select id="display-hand"><option value="right">Right</option><option value="left">Left</option></select><button id="recenter-hand" class="quiet-button" type="button">Recenter view</button></div>
+          <p class="detail">The display setting mirrors the illustration. <a href="https://github.com/immersive-web/webxr-input-profiles/tree/main/packages/assets/profiles/generic-hand" target="_blank" rel="noreferrer">Hand mesh: WebXR Input Profiles</a> · MIT.</p>
+        </div>
+        <div class="dial-panel">
+          <p class="eyebrow">PINCH → TURN → RELEASE</p>
+          <h2>A dial in your hand</h2>
+          <svg class="dial-face" viewBox="0 0 240 240" role="img" aria-label="Virtual dial"><circle cx="120" cy="120" r="92" class="dial-track"/><path id="dial-arc" class="dial-arc"/><g id="dial-pointer"><circle cx="120" cy="28" r="5"/></g><text id="dial-value" x="120" y="129">50</text><text class="dial-unit" x="120" y="151">VIRTUAL VALUE</text></svg>
+          <div id="pinch-status" class="pinch-status" role="status">Start the listener when you’re ready</div>
+          <p id="dial-help">Pinch thumb and index, then turn your wrist. Direct rotation follows your wrist. Hold to adjust keeps changing the value while your wrist stays turned.</p>
+          <div class="dial-settings"><label for="dial-response">Response</label><select id="dial-response"><option value="direct">Direct rotation</option><option value="rate">Hold to adjust</option></select><label for="dial-sensitivity">Sensitivity <output id="sensitivity-value">1×</output></label><input id="dial-sensitivity" type="range" min="0.5" max="4" value="1" step="0.25"><p id="settings-status" class="detail" role="status">Changes apply immediately; pinch again after changing a setting.</p></div>
+          <div class="dial-meta"><span id="live-gestures">0 gesture messages</span><span id="dial-steps">0 steps</span></div>
+          <p class="detail">Taps, holds and thumb swipes animate recognized events. Finger motion is illustrated, not measured joint tracking. Wrist motion is approximate and may drift; use Recenter view. This dial changes only the value shown here. Haptic ticks are not enabled.</p>
+        </div>
+      </section>
+      <div class="workspace">
+        <section class="plot-panel">
+          <div class="section-heading"><div><h2>Live sEMG · experimental ADC view</h2><p id="emg-summary">Waiting for a recorded stream</p></div><span id="emg-state" class="badge">NO SAMPLES</span></div>
+          <div id="emg-chart" class="chart" role="img" aria-label="Eight experimental EMG channels in ADC counts"></div>
+          <p id="emg-detail" class="detail">Voltage conversion and physical channel placement have not been verified.</p>
+          <div class="section-heading"><div><h2>Transport traffic</h2><p id="traffic-source">Saved connection check</p></div><div class="legend"><span><i class="receive"></i>From band</span><span><i class="send"></i>To band</span></div></div>
+          <div id="traffic-chart" class="chart" role="img" aria-label="Bluetooth traffic in bytes per quarter-second interval"></div>
+          <div class="plot-footer"><span id="traffic-totals">No traffic yet</span><span>Connection traffic · not sEMG</span></div>
+        </section>
+        <aside class="event-panel"><div class="section-heading"><h2>Session events</h2><span id="event-state" class="badge">RECORDED</span></div><ol id="event-list"></ol><p id="event-empty" class="detail" hidden>No events recorded.</p></aside>
+      </div>
+      <div class="access-note"><strong>Direct from the band</strong><p>Choose a stream, then press Start. Hand + dial runs for up to five minutes; sEMG records for one minute. Stop ends the streams and disconnects. Traces show received ADC readings; gaps remain visible. Voltage scaling and electrode placement still need validation.</p></div>
+    </section>
+    <section id="history-panel" role="tabpanel" aria-labelledby="history-tab" hidden>
+      <div class="section-heading"><div><h2>Recognized index pinches</h2><p>Recorded through the glasses and iPhone · September 13, 2026</p></div><span class="badge">HISTORY · NOT LIVE</span></div>
+      <div id="gesture-chart" class="chart gesture-chart" role="img" aria-label="Timing and duration of ten recorded index pinches"></div>
+      <div class="history-note">Each mark is a recognized pinch. These are gesture events, not electrical muscle samples. Times are shown in New York time.</div>
+      <div class="table-wrap"><table><thead><tr><th>Pinch</th><th>Press</th><th>Release</th><th>Hold</th><th>Batch received</th></tr></thead><tbody id="gesture-rows"></tbody></table></div>
+    </section>
+    <footer><span>Data stays on this Mac.</span><span id="updated">Waiting for the local server</span></footer>
+  </main>
+</body>
+</html>
