@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { GestureAnimator } from './dashboard/gesture-animation.js';
+import { GestureAnimator } from '../static/gesture-animation.js';
 
 const event = (id, action, derived = 'unknown', finger = 'index', extra = {}) =>
   ({id, finger, action, derived_action: derived, synthetic: false, age_ms: 0, ...extra});

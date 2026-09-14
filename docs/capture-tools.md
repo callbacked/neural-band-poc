@@ -40,7 +40,7 @@ Raw mode includes link completion and a configuration query. It queries stream f
 For the user-controlled console:
 
 ```sh
-python3 instrumentation/dashboard_server.py --port 8765
+python3 -m dashboard.server --port 8765
 ```
 
 Open `http://localhost:8765`. Record starts up to 60 seconds of collection after ADC samples arrive; the displayed cue asks for 15 seconds relaxed, 15 seconds gentle flexing, then relaxation. Cue times indicate requested behavior, not verified wearer actions. The trace shows recent samples centered on each channel's window mean, with a shared ADC-count scale and visible gaps. The server exposes only allowlisted assets and curated state, requires loopback/same-origin actions, and shares the band connection lock with both hardware CLIs. Historical pinch events are explicitly separate from the live ADC view.
@@ -194,4 +194,4 @@ CLI equivalent (without the dashboard's live settings file):
 python3 instrumentation/mac_band_probe.py BAND_COREBLUETOOTH_UUID --query-device-info --stream-control dial --seconds 300 --output captures/my-dial.jsonl
 ```
 
-Full events stay in the capture; a curated `.live.json` sidecar supplies the fast dashboard hand endpoint. Gyro is type `0x0200020f`, quaternion `0x02000212`, recognized gestures `0x0200020d`. `host_loop_delay` records receive-loop pauses over 100 ms. Probe completion now requires clean framing and explicit disable acknowledgements for the requested streams. The vendored Three.js files include their license and source information under `instrumentation/dashboard/vendor/`.
+Full events stay in the capture; a curated `.live.json` sidecar supplies the fast dashboard hand endpoint. Gyro is type `0x0200020f`, quaternion `0x02000212`, recognized gestures `0x0200020d`. `host_loop_delay` records receive-loop pauses over 100 ms. Probe completion now requires clean framing and explicit disable acknowledgements for the requested streams. The vendored Three.js files include their license and source information under `dashboard/static/vendor/`.

@@ -295,7 +295,7 @@ Validation: **39 Python tests pass**, including fragmented motion/gesture parsin
 
 ## Hand mesh and gesture references
 
-The console uses the MIT-licensed generic right-hand GLB from WebXR Input Profiles: a continuous skin with 1,360 vertices, 2,314 triangles and 25 joints. [Asset provenance and license](../instrumentation/dashboard/models/README.md) stay with the model. Pose checks cover fingertip-pad proximity, release, unchanged ring/pinky joints, finite skin bounds and mirroring.
+The console uses the MIT-licensed generic right-hand GLB from WebXR Input Profiles: a continuous skin with 1,360 vertices, 2,314 triangles and 25 joints. [Asset provenance and license](../dashboard/static/models/README.md) stay with the model. Pose checks cover fingertip-pad proximity, release, unchanged ring/pinky joints, finite skin bounds and mirroring.
 
 The supplied videos and current animation behavior are documented in [gesture references](gestures.md). Joint poses illustrate recognized events rather than measured finger angles.
 

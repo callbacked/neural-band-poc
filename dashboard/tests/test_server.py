@@ -10,7 +10,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-import dashboard_server
+from dashboard import server as dashboard_server
 
 
 class DashboardTests(unittest.TestCase):

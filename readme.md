@@ -15,7 +15,7 @@ unpair your neural band from the app, and run the pairing process again, for the
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python instrumentation/dashboard_server.py
+python -m dashboard.server
 ```
 
 open [localhost:8765](http://localhost:8765). put the band in pairing mode, hit find band, choose it, then start. it remembers the band after that.
