@@ -38,4 +38,4 @@ the hand shows recognized taps, holds and swipes. it isn't tracking every finger
 
 [findings](docs/findings.md) · [gesture references](docs/gestures.md) · [protocol notes](docs/protocol.md) · [capture tools](docs/capture-tools.md)
 
-shoutout astra for reviving this project lol
+shoutout astra for reviving this project lol, this definitely contains a bunch of unreadable slop though.
