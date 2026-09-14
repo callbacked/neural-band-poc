@@ -11,7 +11,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from airshield import StreamDecryptor, derive_keys
 from analyze_capture import protobuf_fields
 from extract_telemetry import datax_frames
-from mac_band_probe import BandHandshake
+from mac_band_probe import BandHandshake, typed_frame
 from test_extract_telemetry import field
 
 
@@ -27,6 +27,108 @@ class MacBandProbeTests(unittest.TestCase):
         self.request = (0x8000 | (8 + len(payload))).to_bytes(2, "big") + bytes.fromhex("80018100000502000001") + payload
         payload = field(1, self.peer_public) + field(2, self.peer_seed) + field(3, self.peer_iv) + field(4, 42) + field(5, 3)
         self.enable = (0x8000 | (4 + len(payload))).to_bytes(2, "big") + bytes.fromhex("000102000002") + payload
+
+    def start_hand_session(self, hand=None):
+        self.now = 0.
+        self.probe = BandHandshake(lambda event, **values: self.events.append((event, values)),
+                                   stream_control="dial", hand=hand, clock=lambda: self.now)
+        outgoing = self.probe.feed(self.request + self.enable)
+        size = (int.from_bytes(outgoing[:2], "big") & 0x7fff) + 4
+        local = {n: v for n, w, v in protobuf_fields(outgoing[8:size])}
+        public = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), b"\x04" + local[1])
+        secret = self.peer_private.exchange(ec.ECDH(), public)
+        self.peer_decoder = StreamDecryptor(derive_keys(secret, self.peer_challenge, local[2], 3), local[3], local[4], 3)
+        self.peer_keys = derive_keys(secret, self.probe.challenge, self.peer_seed, 3)
+        self.peer_counter = 42
+        return self.read_requests(outgoing[size:])
+
+    def read_requests(self, outgoing):
+        packets = self.peer_decoder.feed(outgoing)
+        frames = datax_frames([{"plaintext": p.plaintext.hex(), "observed_complete": {}} for p in packets])
+        return [(channel, {n: v for n, w, v in protobuf_fields(payload)})
+                for channel, words, payload, at in frames if channel == 0x8007]
+
+    def config_reply(self, request_id, hand=None, status=1, channel=7):
+        payload = field(1, request_id) + field(2, status)
+        if hand is not None:
+            payload += field(6, field(10, hand))
+        frame = typed_frame(channel, [0x02000315], payload)
+        count = -len(frame) % 16
+        cipher = Cipher(algorithms.AES(self.peer_keys.encryption), modes.CBC(self.peer_iv)).encryptor()
+        ciphertext = cipher.update(frame + bytes([0xc0 + count])*count) + cipher.finalize()
+        body = bytes([len(ciphertext)//16 - 1]) + ciphertext
+        mac = hmac.new(self.peer_keys.mac, self.peer_counter.to_bytes(4, "little") + body, hashlib.sha256).digest()[:8]
+        self.peer_iv = ciphertext[-16:]
+        self.peer_counter += 1
+        outgoing = b''.join(self.probe.feed(bytes([b])) for b in b'\x40' + mac + body)
+        return self.read_requests(outgoing)
+
+    def test_both_hand_changes_write_only_the_boolean_then_read_back(self):
+        for hand, value in [('left', 1), ('right', 0)]:
+            with self.subTest(hand=hand):
+                self.setUp()
+                self.assertEqual(self.start_hand_session(hand), [(0x8007, {1: 5, 5: b''})])
+                self.assertEqual(self.config_reply(5, 1-value), [(0x8007, {1: 6, 5: bytes([0x50, value])})])
+                self.assertIsNone(self.probe.hand)
+                # Even an echo of the desired value still requires a new read.
+                self.assertEqual(self.config_reply(6, value), [(0x8007, {1: 7, 5: b''})])
+                self.assertIsNone(self.probe.input_service.interaction.hand)
+                self.assertEqual(self.config_reply(7, value), [])
+                states = [data for event, data in self.events if event == 'interaction_state']
+                self.assertEqual(states[-1]['hand'], hand)
+                self.assertEqual(self.probe.hand, hand)
+                self.assertIsNone(self.probe.hand_error)
+
+    def test_no_preference_reads_existing_hand_without_a_write(self):
+        self.start_hand_session()
+        self.assertEqual(self.config_reply(5, 1), [])
+        self.assertEqual(self.probe.hand, 'left')
+        self.assertEqual(self.config_reply(5, 0), [])
+        self.assertEqual(self.probe.hand, 'left')
+
+    def test_matching_preference_needs_no_write(self):
+        self.start_hand_session('right')
+        self.assertEqual(self.config_reply(5, 0), [])
+        self.assertEqual(self.probe.hand, 'right')
+
+    def test_wrong_channel_stale_id_and_late_reply_cannot_confirm_hand(self):
+        self.start_hand_session('left')
+        self.assertEqual(self.config_reply(5, 1, channel=5), [])
+        self.assertEqual(self.config_reply(4, 1), [])
+        self.assertIsNone(self.probe.hand)
+        self.now = 5
+        self.assertEqual(self.config_reply(5, 1), [])
+        self.assertIsNone(self.probe.hand)
+        self.assertIn('timed out', self.probe.hand_error)
+
+    def test_missing_invalid_rejected_and_mismatched_hand_are_not_success(self):
+        for failure in ('missing', 'invalid', 'rejected_read', 'rejected_write', 'mismatch', 'timeout'):
+            with self.subTest(failure=failure):
+                self.setUp()
+                self.start_hand_session('left')
+                if failure == 'missing':
+                    self.config_reply(5)
+                elif failure == 'invalid':
+                    self.config_reply(5, 2)
+                elif failure == 'rejected_read':
+                    self.config_reply(5, 1, status=2)
+                else:
+                    self.config_reply(5, 0)
+                    if failure == 'rejected_write':
+                        self.config_reply(6, status=2)
+                    else:
+                        self.config_reply(6)
+                        if failure == 'mismatch':
+                            self.config_reply(7, 0)
+                        else:
+                            self.now = 5
+                            self.probe.tick()
+                            self.config_reply(7, 1)
+                self.assertIsNone(self.probe.hand)
+                self.assertIsNotNone(self.probe.hand_error)
+                states = [data for event, data in self.events if event == 'interaction_state']
+                self.assertIsNone(states[-1]['hand'])
+                self.assertFalse(states[-1]['engaged'])
 
     def test_fragmented_exchange_and_independently_encrypted_peer_reply(self):
         request = self.probe.request()

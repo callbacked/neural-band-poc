@@ -61,9 +61,18 @@ import { GestureAnimator } from '/gesture-animation.js';
   el('dial-response').addEventListener('change',saveSettings);
   el('dial-sensitivity').addEventListener('input',()=>{el('sensitivity-value').textContent=`${el('dial-sensitivity').value}×`;});
   el('dial-sensitivity').addEventListener('change',saveSettings);
-  try { el('display-hand').value = localStorage.getItem('displayHand') === 'left' ? 'left' : 'right'; } catch {}
-  el('display-hand').addEventListener('change', () => {
-    try { localStorage.setItem('displayHand', el('display-hand').value); } catch {}
+  let savingHand = false, handError = null;
+  el('band-hand').addEventListener('change', async () => {
+    savingHand = true;
+    el('band-hand').disabled = true;
+    handError = null;
+    try {
+      const response = await fetch('/api/hand', {method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({hand:el('band-hand').value || null})});
+      const result = await response.json();
+      if (!response.ok) throw Error(result.error);
+    } catch (error) { handError = error.message; }
+    finally { savingHand = false; }
   });
   const mul = (a, b) => {
     const [w,x,y,z] = a, [v,i,j,k] = b;
@@ -78,6 +87,12 @@ import { GestureAnimator } from '/gesture-animation.js';
       const response = await fetch('/api/interaction');
       if (!response.ok) throw Error('Listener unavailable');
       packet = await response.json();
+      if (!savingHand) el('band-hand').value = packet.requested_hand || '';
+      el('band-hand').disabled = savingHand || packet.running;
+      el('hand-setting-status').textContent = handError || packet.hand_error || (packet.listening
+        ? packet.hand ? `${packet.hand === 'left' ? 'Left' : 'Right'} hand · confirmed by your band`
+          : 'Checking the band hand setting…'
+        : 'Changes apply when you press Start. Stop the session to change hands.');
       if (!settingsLoaded && packet.settings) {
         el('dial-response').value=packet.settings.response;
         el('dial-sensitivity').value=packet.settings.sensitivity;
@@ -100,6 +115,7 @@ import { GestureAnimator } from '/gesture-animation.js';
       el('dial-steps').textContent = `${packet.steps || 0} steps`;
     } catch {
       packet.live = false;
+      el('band-hand').disabled = true;
     } finally {
       setTimeout(poll, 50);
     }
@@ -111,9 +127,9 @@ import { GestureAnimator } from '/gesture-animation.js';
     if (!fresh) animator.clear();
     const pose = animator.sample(now);
     el('recognized-event').textContent = animator.label;
-    const hand = el('display-hand').value;
+    const hand = packet.hand || packet.requested_hand || 'right';
     const emgSession = packet.stream_mode === 'raw-emg';
-    el('hand-state').textContent = fresh ? `${hand.toUpperCase()} · LIVE` : emgSession ? 'sEMG SESSION' : 'OFFLINE';
+    el('hand-state').textContent = fresh ? `${packet.hand ? hand.toUpperCase() : 'HAND UNKNOWN'} · LIVE` : emgSession ? 'sEMG SESSION' : 'OFFLINE';
     el('pinch-status').textContent = fresh ? packet.reason : packet.listening ? 'Waiting for fresh band motion…'
       : emgSession ? 'Hand view is paused during sEMG recording' : 'Press Start when you’re ready';
     el('pinch-status').classList.toggle('engaged', Boolean(engaged));

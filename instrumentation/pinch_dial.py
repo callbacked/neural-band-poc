@@ -22,6 +22,7 @@ class PinchDial:
     def __init__(self, emit, clock=time.monotonic):
         self.emit, self.clock = emit, clock
         self.value = 50
+        self.hand = self.hand_error = None
         self.active = False
         self.fingers = {"index": False, "middle": False}
         self.pressed_at = {}
@@ -39,6 +40,15 @@ class PinchDial:
         self.gyro_scale = .07
         self.response = "direct"
         self.sensitivity = 1.
+
+    def set_hand(self, hand, error=None):
+        if hand not in (None, "left", "right"):
+            raise ValueError("Hand must be left or right")
+        self.hand, self.hand_error = hand, error
+        self.fingers = dict.fromkeys(self.fingers, False)
+        self.pressed_at.clear()
+        self.release(error or ("Hand confirmed · pinch to turn the dial" if hand else "Waiting for band hand setting"))
+        self.publish(True)
 
     def configure(self, response="direct", sensitivity=1.):
         if response not in ("direct", "rate") or not isinstance(sensitivity, (int, float)) or not math.isfinite(sensitivity) or not .5 <= sensitivity <= 4:
@@ -65,7 +75,7 @@ class PinchDial:
         self.last_publish = now
         while self.recent_gestures and now - self.recent_gestures[0][0] > 1:
             self.recent_gestures.popleft()
-        self.emit("interaction_state", value=self.value, engaged=self.active,
+        self.emit("interaction_state", value=self.value, engaged=self.active, hand=self.hand, hand_error=self.hand_error,
                   fingers=dict(self.fingers), rotation=list(self.rotation),
                   gesture_count=self.gestures, steps=self.steps,
                   last_gesture=self.last_gesture, reason=self.reason,
@@ -107,7 +117,7 @@ class PinchDial:
                 if press and not self.fingers[finger]:
                     self.fingers[finger] = True
                     self.pressed_at[finger] = now
-                    if finger == "index" and self.last_gyro_at is not None and now-self.last_gyro_at < .35:
+                    if finger == "index" and self.hand is not None and self.last_gyro_at is not None and now-self.last_gyro_at < .35:
                         self.release("Pinched · rotate your wrist")
                         self.active = True
                 if release:
@@ -141,18 +151,20 @@ class PinchDial:
                 norm = math.sqrt(sum(v*v for v in self.rotation))
                 self.rotation = [v/norm for v in self.rotation]
             if self.active:
+                # Wrist mirroring changes the dial sign, not gesture labels or IMU pose.
+                polarity = -1 if self.hand == "left" else 1
                 self.integral = [v+d for v, d in zip(self.integral, delta)]
                 if self.axis is None and max(map(abs, self.integral)) >= 1:
                     self.axis = max(range(3), key=lambda i: abs(self.integral[i]))
                     if self.response == "direct":
-                        self.remainder = self.integral[self.axis]*self.sensitivity
+                        self.remainder = self.integral[self.axis]*self.sensitivity*polarity
                 elif self.axis is not None and self.response == "direct":
-                    self.remainder += delta[self.axis]*self.sensitivity
+                    self.remainder += delta[self.axis]*self.sensitivity*polarity
                 if self.axis is not None and self.response == "rate":
                     tilt = self.integral[self.axis]
                     # A small dead zone allows a held pinch to rest at neutral.
                     speed = math.copysign(min(40., max(0., abs(tilt)-3)*3)*self.sensitivity, tilt)
-                    self.remainder += speed*dt
+                    self.remainder += speed*dt*polarity
                 step = math.trunc(self.remainder)
                 if step:
                     previous = self.value

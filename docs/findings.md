@@ -286,7 +286,7 @@ Replay of the five-minute capture through the first dial implementation produced
 
 Active sensor sessions use Apple's user-initiated process activity hint to avoid App Nap and log host-loop delays over 100 ms. This is a candidate mitigation and diagnostic, **not an established cause or fix for delayed delivery**. The sidecar write benchmark was sub-millisecond (median ~0.15 ms), which did not explain the observed seconds-long gaps. [Apple's process activity guidance](https://developer.apple.com/library/archive/documentation/Performance/Conceptual/power_efficiency_guidelines_osx/PrioritizeWorkAtTheAppLevel.html).
 
-**Handedness:** `captures/proto-storage-layouts.json` contains native `ConfigReq._isLeftHanded`. Its wire field mapping, current value and write behavior remain unverified. The UI selection only mirrors the model. A new read-only native reflection attempt stalled during Frida script loading and was terminated; no handedness or haptic commands were sent.
+**Handedness at this checkpoint:** `captures/proto-storage-layouts.json` contained native `ConfigReq._isLeftHanded`, but its wire mapping and write behavior were unverified, and the UI only mirrored the model. Subsequent native inspection and hardware read/write/read-back checks resolved the hand setting; see [handedness](handedness.md). Haptic configuration remains unverified.
 
 **Ring/pinky:** not present among the decoded native finger enum cases. The user wants these eventually. A separate Mac classifier trained and evaluated on labeled raw sEMG is the next experimental route. Success and cross-session accuracy are not yet established. Ring/pinky model geometry remains illustrative and does not claim recognition.
 
