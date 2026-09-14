@@ -24,7 +24,7 @@ pick hand + dial for gestures, or semg for raw readings. hand sessions run for u
 
 ## what would be cool
 
-training a model for hand gestures and even better hand tracking
+training a model for more hand gestures and even better hand tracking (as in, you can see your fingers articulate freely)
 
 [doing that thing meta did where you can write on a surface and it turns your gestures to text](https://www.meta.com/help/ai-glasses/866944989643926/)
 
