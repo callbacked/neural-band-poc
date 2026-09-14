@@ -1,12 +1,15 @@
 # neural band poc
 
-live semg readings from a meta neural band connected directly to a mac. no glasses or phone needed for the streams tested here.
+https://github.com/user-attachments/assets/4fc157bc-b579-480d-971b-bae8bdbb86fa
+
+live sEMG readings from a meta neural band connected directly to a mac. no glasses or phone needed for the streams tested here.
 
 there's a local console with eight channels, a 3d gesture hand, and a pinch and roll dial. you can find and connect the band from there too.
 
 ## run it
 
 macos + python 3.11. allow bluetooth access for the terminal when asked.
+unpair your neural band from the app, and run the pairing process again, for the console to pick up
 
 ```sh
 python3 -m venv .venv
@@ -18,6 +21,9 @@ python instrumentation/dashboard_server.py
 open [localhost:8765](http://localhost:8765). put the band in pairing mode, hit find band, choose it, then start. it remembers the band after that.
 
 pick hand + dial for gestures, or semg for raw readings. hand sessions run for up to five minutes; semg runs for a minute. stop ends the session. captures stay local.
+
+
+
 
 ## still figuring out
 
