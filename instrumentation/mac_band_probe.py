@@ -27,6 +27,9 @@ from band_access import band_connection
 from input_service import InputService
 
 
+STREAM_FIELDS = {"raw-emg": (2,), "dial": (3, 6, 8), "inference": (3, 4)}
+
+
 def varint(value):
     encoded = bytearray()
     while value >= 128:
@@ -60,7 +63,8 @@ class BandHandshake:
         self.hand = self.hand_error = None
         self.config_request = None
         self.config_id = 4
-        self.config_outgoing = bytearray()
+        self.rpc_outgoing = bytearray()
+        self.inference_start_pending = stream_control == "inference"
         self.private = ec.generate_private_key(ec.SECP256R1())
         self.public = self.private.public_key().public_bytes(
             serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)[1:]
@@ -74,10 +78,10 @@ class BandHandshake:
         self.query_device_info = query_device_info
         self.end_link_setup = end_link_setup or stream_control is not None or query_config or hand is not None
         self.stream_control = stream_control
-        self.query_config = query_config or stream_control == "dial" or hand is not None
+        self.query_config = query_config or stream_control in ("dial", "inference") or hand is not None
         self.rpc_channels = set()
         self.tx_keys = None
-        self.stream_fields = (3, 6, 8) if stream_control == "dial" else (2,)
+        self.stream_fields = STREAM_FIELDS.get(stream_control, (2,))
         self.input_service = InputService(self.receive_input, requested_fields=self.stream_fields)
 
     def request_config(self, stage):
@@ -110,6 +114,11 @@ class BandHandshake:
 
     def receive_input(self, event, **data):
         self.emit(event, **data)
+        if (event == "input_rpc_response" and self.inference_start_pending
+                and data["channel"] & 0x7fff == 5 and data["request_id"] == 2 and data["status"] == 1):
+            # Confirm the link answers queries before trying the experimental stream.
+            self.inference_start_pending = False
+            self.rpc_outgoing.extend(self.stream_request(0x8005, 3, True))
         if event != "input_rpc_response" or not self.config_request:
             return
         request_id, stage, deadline = self.config_request
@@ -121,13 +130,13 @@ class BandHandshake:
             self.fail_hand("Band rejected the hand configuration request")
         elif stage == "write":
             # An acknowledgement is not evidence that the setting stuck.
-            self.config_outgoing.extend(self.request_config("verify"))
+            self.rpc_outgoing.extend(self.request_config("verify"))
         elif data["is_left_handed"] not in (0, 1):
             self.fail_hand("Band did not report a valid hand setting")
         else:
             actual = "left" if data["is_left_handed"] else "right"
             if stage == "read" and self.requested_hand is not None and actual != self.requested_hand:
-                self.config_outgoing.extend(self.request_config("write"))
+                self.rpc_outgoing.extend(self.request_config("write"))
             elif stage == "verify" and actual != self.requested_hand:
                 self.fail_hand(f"Band still reports {actual} hand after the change")
             else:
@@ -157,7 +166,9 @@ class BandHandshake:
         return typed_frame(0x8001, [0x81000005, 0x02000001], payload)
 
     def stream_request(self, channel, request_id, enabled=None):
-        # Native name maps: RPC field 4; EMG=2, gestures=3, gyro=6, quat=8.
+        # Native name maps: RPC field 4; EMG=2, gestures=3, inference=4, gyro=6, quat=8.
+        if enabled is False:
+            self.inference_start_pending = False
         control = b"" if enabled is None else b"".join(field(n, int(enabled)) for n in self.stream_fields)
         payload = field(1, request_id) + field(4, control)
         self.emit("stream_control_queued", request_id=request_id, raw_emg=enabled if 2 in self.stream_fields else None,
@@ -230,7 +241,7 @@ class BandHandshake:
                     outgoing.extend(self.request_config("read"))
                 if self.stream_control:
                     outgoing.extend(self.stream_request(0x8005, 2))
-                    if self.stream_control in ("raw-emg", "dial"):
+                    if self.stream_control in STREAM_FIELDS and not self.inference_start_pending:
                         outgoing.extend(self.stream_request(0x8005, 3, True))
         if self.decoder is not None:
             data = bytes(self.pending)
@@ -242,8 +253,8 @@ class BandHandshake:
                     self.input_service.feed(record.plaintext)
                 else:
                     self.emit("unauthenticated_record", kind=record.kind, channel=record.channel, payload=record.payload.hex())
-        outgoing.extend(self.config_outgoing)
-        self.config_outgoing.clear()
+        outgoing.extend(self.rpc_outgoing)
+        self.rpc_outgoing.clear()
         return bytes(outgoing)
 
     def finish(self):
@@ -374,7 +385,7 @@ def run_probe(args, emit):
             if delegate.channel is None:
                 continue
             incoming, outgoing = delegate.channel.inputStream(), delegate.channel.outputStream()
-            if (args.stream_control in ("raw-emg", "dial") and delegate.handshake.tx_keys is not None
+            if (args.stream_control in STREAM_FIELDS and delegate.handshake.tx_keys is not None
                     and not stop_queued and time.monotonic() >= deadline - 3):
                 delegate.outgoing.extend(delegate.handshake.stream_request(0x8005, 4, False))
                 stop_queued = True
@@ -385,8 +396,9 @@ def run_probe(args, emit):
                 if count:
                     emit("stream_bytes", direction="rx", hex=data.hex(), count=count)
                     delegate.outgoing.extend(delegate.handshake.feed(data))
-                    if (args.stream_control in ("raw-emg", "dial") and not recording_started and not stop_queued and not stopping
-                            and (delegate.handshake.input_service.sample_frames or delegate.handshake.input_service.motion_messages)):
+                    if (args.stream_control in STREAM_FIELDS and not recording_started and not stop_queued and not stopping
+                            and (delegate.handshake.input_service.sample_frames or delegate.handshake.input_service.motion_messages
+                                 or (args.stream_control == "inference" and delegate.handshake.input_service.streams_enabled_acknowledged))):
                         recording_started = True
                         deadline = time.monotonic() + args.seconds
                         emit("recording_started", duration_seconds=args.seconds, mode=args.stream_control)
@@ -418,13 +430,16 @@ def run_probe(args, emit):
              streams_disabled_acknowledged=delegate.handshake.input_service.streams_disabled_acknowledged,
              motion_messages=delegate.handshake.input_service.motion_messages,
              gesture_messages=delegate.handshake.input_service.gesture_messages,
+             inference_messages=delegate.handshake.input_service.inference_messages,
              other_messages=delegate.handshake.input_service.other_messages,
              hand=delegate.handshake.hand, hand_error=delegate.handshake.hand_error)
         delegate.handshake.input_service.finish()
         if args.hand is not None and delegate.handshake.hand != args.hand:
             raise ValueError(delegate.handshake.hand_error or "Requested band hand was not confirmed")
-        if args.stream_control in ("raw-emg", "dial") and not delegate.handshake.input_service.streams_disabled_acknowledged:
+        if args.stream_control in STREAM_FIELDS and not delegate.handshake.input_service.streams_disabled_acknowledged:
             raise ValueError("Disconnected without confirmation that all requested streams stopped")
+        if args.stream_control == "inference" and not delegate.handshake.input_service.inference_messages:
+            raise ValueError("No supported inference samples were received; inspect the saved responses and payloads")
         return bool(delegate.handshake.authenticated_packets)
     finally:
         process_info.endActivity_(activity)
@@ -446,17 +461,17 @@ if __name__ == "__main__":
     parser.add_argument("--dial-settings", type=Path, help="local JSON response/sensitivity settings, watched during gesture modes")
     parser.add_argument("--query-device-info", action="store_true", help="read input-service metadata; pair with --end-link-setup")
     parser.add_argument("--end-link-setup", action="store_true", help="complete link setup before input-service requests")
-    parser.add_argument("--stream-control", choices=("query", "raw-emg", "dial"),
-                        help="query flags, raw EMG, or gestures/motion (dial); disables requested streams before the deadline")
+    parser.add_argument("--stream-control", choices=("query", *STREAM_FIELDS),
+                        help="query flags, raw EMG, gestures/motion (dial), or experimental raw inference; disables requested streams before the deadline")
     parser.add_argument("--query-config", action="store_true", help="read current input-service configuration; includes EndLinkSetup")
     parser.add_argument("--hand", choices=("left", "right"), help="set the band hand and verify it with a separate read; omitted keeps the band setting")
     parser.add_argument("--output", type=Path, required=True, help="new local JSONL capture; includes session material")
     args = parser.parse_args()
     if not 1 <= args.seconds <= 300:
         parser.error("duration must be 1–300 seconds")
-    if args.stream_control in ("raw-emg", "dial") and args.seconds < 10:
+    if args.stream_control in STREAM_FIELDS and args.seconds < 10:
         parser.error("stream experiments need at least 10 seconds for setup and cleanup")
-    if args.stream_control in ("raw-emg", "dial"):
+    if args.stream_control in STREAM_FIELDS:
         args.query_config = True
     args.identifier = args.identifier.upper()
     with args.output.open("x") as capture:
@@ -469,7 +484,7 @@ if __name__ == "__main__":
                 temporary = live.with_suffix(".tmp")
                 temporary.write_text(json.dumps(row))
                 temporary.replace(live)
-            if event not in ("session_material", "stream_bytes", "authenticated_packet", "unauthenticated_record", "emg_batch", "raw_emg_payload", "gyro_sample", "orientation_sample", "input_message", "gesture", "interaction_state"):
+            if event not in ("session_material", "stream_bytes", "authenticated_packet", "unauthenticated_record", "emg_batch", "raw_emg_payload", "inference_sample", "raw_inference_payload", "gyro_sample", "orientation_sample", "input_message", "gesture", "interaction_state"):
                 print(json.dumps(row), flush=True)
         try:
             with band_connection():

@@ -18,11 +18,15 @@ class InputService:
         self.datax = DataXStream()
         self.types = {}
         self.config = None
+        self.inference_config = None
+        self.inference_messages = 0
+        self.inference_sequences = {}
         self.raw_messages = self.sample_frames = self.missing_batches = 0
         self.previous_sequence = None
         self.raw_enabled = False
         self.disable_acknowledged = False
         self.requested_fields = requested_fields
+        self.streams_enabled_acknowledged = False
         self.streams_disabled_acknowledged = False
         self.other_messages = {}
         self.motion_messages = 0
@@ -55,7 +59,9 @@ class InputService:
                     enabled = control.get((2, 0))
                     flags = {str(n): control[n, 0] for n in self.requested_fields if (n, 0) in control}
                     self.emit("stream_control_received", request_id=request_id, status=status, raw_emg=enabled, flags=flags)
-                    if status == 1 and request_id == 4 and all(control.get((n, 0)) == 0 for n in self.requested_fields):
+                    if channel & 0x7fff == 5 and status == 1 and request_id == 3 and all(control.get((n, 0)) == 1 for n in self.requested_fields):
+                        self.streams_enabled_acknowledged = True
+                    if channel & 0x7fff == 5 and status == 1 and request_id == 4 and all(control.get((n, 0)) == 0 for n in self.requested_fields):
                         self.streams_disabled_acknowledged = True
                     if status == 1 and request_id == 3 and enabled == 1:
                         self.raw_enabled = True
@@ -63,6 +69,14 @@ class InputService:
                         self.raw_enabled = False
                         self.disable_acknowledged = True
                 if (6, 2) in fields:
+                    if status == 1 and (46, 2) in config:
+                        inference = checked_fields(config[46, 2])
+                        self.inference_config = {"pipeline_type": inference.get((3, 0)),
+                                                 "downsample_window": inference.get((1, 0)),
+                                                 "model_stride": inference.get((2, 0)),
+                                                 "normalized": inference.get((4, 0)),
+                                                 "num_logits": inference.get((5, 0))}
+                        self.emit("inference_config_received", **self.inference_config)
                     if status == 1 and (42, 2) in config:
                         emg = checked_fields(config[42, 2])
                         self.config = {"sample_rate": emg.get((1, 0)), "channels": emg.get((2, 0)),
@@ -89,6 +103,26 @@ class InputService:
                 self.sample_frames += 16
                 self.emit("emg_batch", sequence=sequence, timestamp_us=timestamp, missing_before=missing,
                           samples=[list(values[i:i + 8]) for i in range(0, 128, 8)])
+            elif kind == 0x0200020c:
+                fields = checked_fields(payload)
+                sequence, timestamp = fields.get((1, 0)), fields.get((2, 0))
+                data, pipeline = fields.get((3, 2)), fields.get((10, 0))
+                if sequence is None or timestamp is None or data is None or pipeline is None:
+                    raise ValueError("inference sample lacks sequence, timestamp, channels or pipeline")
+                # Only the nine-float payload has been observed and compared with the config.
+                if not self.inference_config or self.inference_config["num_logits"] != 9 or len(data) != 36:
+                    self.emit("raw_inference_payload", sequence=sequence, timestamp_us=timestamp,
+                              pipeline_type=pipeline, payload=payload.hex(), interpreted=False)
+                    continue
+                scores = list(struct.unpack("<9f", data))
+                if not all(math.isfinite(value) for value in scores):
+                    raise ValueError("inference sample contains non-finite scores")
+                previous = self.inference_sequences.get(pipeline)
+                missing = 0 if previous is None else max(0, sequence - previous - 1)
+                self.inference_sequences[pipeline] = sequence
+                self.inference_messages += 1
+                self.emit("inference_sample", sequence=sequence, timestamp_us=timestamp,
+                          pipeline_type=pipeline, scores=scores, missing_before=missing)
             elif kind == 0x0200020d:
                 fields = checked_fields(payload)
                 if (1, 0) not in fields or (2, 0) not in fields:
