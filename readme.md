@@ -38,6 +38,6 @@ raw readings are experimental adc values. voltage scaling and electrode mapping 
 
 the hand shows recognized taps, holds and swipes. it isn't tracking every finger joint, and ring/pinky gestures aren't supported (same behavior when used natively with the glasses so it's probably not trained on those gestures) the dial only changes the number in the console.
 
-[findings](docs/findings.md) · [gesture references](docs/gestures.md) · [protocol notes](docs/protocol.md) · [capture tools](docs/capture-tools.md)
+[findings](docs/findings.md) · [gesture references](docs/gestures.md) · [protocol notes](docs/protocol.md) · [capture tools](docs/capture-tools.md) · [gesture models](docs/gesture-models.md)
 
 shoutout astra for reviving this project lol, this definitely contains a bunch of unreadable slop though, I would advise combing through this repo with an agent.

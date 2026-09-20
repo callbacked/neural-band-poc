@@ -89,6 +89,48 @@ class InputServiceTests(unittest.TestCase):
             reader.feed(frame+bytes([0xc0+padding])*padding)
             self.assertEqual(reader.streams_disabled_acknowledged, expected)
 
+    def test_inference_acknowledgement_requires_both_flags_and_success(self):
+        self.reader = InputService(lambda *args, **kw: None, requested_fields=(3, 4))
+        self.feed(typed_frame(7, [0x02000315], field(1, 3) + field(2, 1) + field(5, field(3, 1) + field(4, 1))))
+        self.assertFalse(self.reader.streams_enabled_acknowledged)
+        for request, status, flags, expected in [
+            (3, 1, [(3, 1)], (False, False)),
+            (3, 2, [(3, 1), (4, 1)], (False, False)),
+            (3, 1, [(3, 1), (4, 1)], (True, False)),
+            (4, 1, [(3, 0)], (True, False)),
+            (4, 1, [(3, 0), (4, 0)], (True, True)),
+        ]:
+            self.feed(typed_frame(5, [0x02000315], field(1, request) + field(2, status)
+                                 + field(5, b''.join(field(n, v) for n, v in flags))))
+            self.assertEqual((self.reader.streams_enabled_acknowledged,
+                              self.reader.streams_disabled_acknowledged), expected)
+
+    def test_captured_inference_floats_require_matching_config(self):
+        payload = bytes.fromhex('08d2bd021092d5e997ca011a24b9eed4c0cd34a5c06746dcc0c32d8fc0'
+                                '15ba35c19ad912c133071cc190b62ac115ba35c15002')
+        self.feed(typed_frame(5, [0x0200020c], payload))
+        self.assertEqual(self.events[-1][0], 'raw_inference_payload')
+        self.assertEqual(self.events[-1][1]['payload'], payload.hex())
+        config = bytes.fromhex('0800102018022809')
+        self.feed(typed_frame(7, [0x02000315], field(1, 5) + field(2, 1) + field(6, field(46, config))))
+        self.assertEqual(self.reader.inference_config, {'pipeline_type': 2, 'downsample_window': 0,
+                                                      'model_stride': 32, 'normalized': None, 'num_logits': 9})
+        self.feed(typed_frame(5, [0x0200020c], payload))
+        event, sample = self.events[-1]
+        self.assertEqual(event, 'inference_sample')
+        self.assertEqual((sample['sequence'], sample['timestamp_us'], sample['pipeline_type']), (40658, 54273927826, 2))
+        self.assertEqual(sample['scores'], [-6.654140949249268, -5.162695407867432, -6.883594036102295,
+                                           -4.47433614730835, -11.357930183410645, -9.178125381469727,
+                                           -9.751757621765137, -10.669570922851562, -11.357930183410645])
+
+    def test_inference_does_not_interpret_changed_shape_or_nonfinite_scores(self):
+        self.feed(typed_frame(7, [0x02000315], field(1, 5) + field(2, 1) + field(6, field(46, field(5, 9)))))
+        self.feed(typed_frame(5, [0x0200020c], field(1, 1) + field(2, 100) + field(3, bytes(32)) + field(10, 2)))
+        self.assertEqual(self.events[-1][0], 'raw_inference_payload')
+        with self.assertRaisesRegex(ValueError, 'non-finite'):
+            self.feed(typed_frame(5, [0x0200020c], field(1, 2) + field(2, 200)
+                                 + field(3, struct.pack('<9f', *([float('nan')] * 9))) + field(10, 2)))
+
 
 
 if __name__ == "__main__":

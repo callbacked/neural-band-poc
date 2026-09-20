@@ -227,6 +227,33 @@ class MacBandProbeTests(unittest.TestCase):
         self.assertEqual(requests, [{1: 2, 4: b""}, {1: 3, 4: b"\x10\x01"}, {1: 4, 4: b"\x10\x00"}])
         self.assertEqual(frames[-1][:2], (0x8005, []))
 
+    def test_inference_requests_scores_and_gestures_without_writing_config(self):
+        self.probe = BandHandshake(lambda *args, **kwargs: None, stream_control="inference")
+        outgoing = self.probe.feed(self.request + self.enable)
+        size = (int.from_bytes(outgoing[:2], "big") & 0x7fff) + 4
+        local = {n: v for n, w, v in protobuf_fields(outgoing[8:size])}
+        public = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), b"\x04" + local[1])
+        secret = self.peer_private.exchange(ec.ECDH(), public)
+        decoder = StreamDecryptor(derive_keys(secret, self.peer_challenge, local[2], 3), local[3], local[4], 3)
+        self.probe.receive_input("input_rpc_response", channel=5, request_id=2, status=1, is_left_handed=None)
+        packets = list(decoder.feed(outgoing[size:] + self.probe.feed(b"") + self.probe.stream_request(0x8005, 4, False)))
+        decoder.finish()
+        frames = list(datax_frames([{"plaintext": p.plaintext.hex(), "observed_complete": {}} for p in packets]))
+        requests = [(ch, {n: v for n, w, v in protobuf_fields(payload)})
+                    for ch, words, payload, at in frames if ch in (0x8005, 0x8007)]
+        self.assertEqual(requests, [(0x8007, {1: 5, 5: b""}),
+                                    (0x8005, {1: 2, 4: b""}),
+                                    (0x8005, {1: 3, 4: b"\x18\x01\x20\x01"}),
+                                    (0x8005, {1: 4, 4: b"\x18\x00\x20\x00"})])
+        self.assertEqual(frames[-1][:2], (0x8005, []))
+
+    def test_late_stream_query_cannot_enable_inference_after_stop(self):
+        self.probe = BandHandshake(lambda *args, **kwargs: None, stream_control="inference")
+        self.probe.feed(self.request + self.enable)
+        self.probe.stream_request(0x8005, 4, False)
+        self.probe.receive_input("input_rpc_response", channel=5, request_id=2, status=1, is_left_handed=None)
+        self.assertEqual(self.probe.feed(b""), b"")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,6 +8,7 @@ setup and everyday use are in the [main readme](../readme.md). commands in these
 - [handedness](handedness.md): the native hand setting, read-back checks, and dial direction.
 - [capture tools](capture-tools.md): direct mac commands and optional phone instrumentation.
 - [public integrations](public-integrations.md): a dated look at meta's glasses and research APIs.
+- [gesture models](gesture-models.md): the on-band model's score stream, its nine output labels, and what the app reveals about it.
 
 ## code and checks
 
@@ -27,5 +28,6 @@ ruff check instrumentation dashboard
 - validate gesture directions and relative wrist axes with labeled trials.
 - reduce dropped data and shutdown failures. combined semg/gesture framing is still unresolved; the console uses separate modes.
 - investigate haptic settings. ring/pinky recognition would need labeled semg data and a separate classifier.
+- activate the `thumb_tap` output live and find the app code that reads the native label table. see [gesture models](gesture-models.md).
 
 the superseded clients and early text exports are in [git history](https://github.com/callbacked/neural-band-poc/tree/36b99eaf37ffd7a6116e563744457bfdd52e1af6).
