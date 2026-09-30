@@ -120,5 +120,30 @@ class TelemetryCliTests(unittest.TestCase):
         self.assertEqual(result["transfers"][0]["events"][0]["action"], "INDEX_PRESS")
 
 
+
+
+class FullBlockPaddingTests(unittest.TestCase):
+    def test_full_padding_block_between_fragmented_frames(self):
+        from extract_telemetry import DataXStream
+        decoder = DataXStream()
+        payload = bytes(range(256)) + b'abcdefghijklm'
+        encoded = frame(payload, (0x0200020a,))
+        # A full 0xd0 block can terminate an aligned chunk mid-DataX frame.
+        self.assertEqual(list(decoder.feed(encoded[:256] + b'\xd0' * 16, {})), [])
+        remainder = encoded[256:]
+        padding = (-len(remainder)) % 16
+        result = list(decoder.feed(remainder + bytes([0xc0 + padding]) * padding, {}))
+        decoder.finish()
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0][2], payload)
+
+    def test_full_padding_block_after_complete_frame(self):
+        from extract_telemetry import DataXStream
+        decoder = DataXStream()
+        encoded = frame(b'12345678', (0x0200020a,))
+        result = list(decoder.feed(encoded + b'\xd0' * 16, {}))
+        decoder.finish()
+        self.assertEqual(result[0][2], b'12345678')
+
 if __name__ == "__main__":
     unittest.main()

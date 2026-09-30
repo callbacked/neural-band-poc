@@ -14,6 +14,13 @@ async def scan_bands():
     bands = []
     for device, advertisement in advertisements.values():
         name = advertisement.local_name or device.name or ""
+        # Paired 00Z9 on firmware 5c2b1ca1f73b+ suppresses its local name.
+        # Match the observed band family, not all FD5F glasses advertisements.
+        manufacturer = advertisement.manufacturer_data.get(427, b"")
+        band_hint = (not name and manufacturer.startswith(bytes.fromhex("800106"))
+                     and "0000fd5f-0000-1000-8000-00805f9b34fb" in advertisement.service_uuids)
+        if band_hint:
+            name = "Meta Band (unnamed)"
         if name.lower().startswith("meta band"):
             bands.append({"address": device.address, "name": name, "rssi": advertisement.rssi})
     return sorted(bands, key=lambda band: band['rssi'], reverse=True)

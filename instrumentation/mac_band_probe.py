@@ -25,6 +25,7 @@ from airshield import AuthenticatedPacket, StreamDecryptor, derive_keys
 from analyze_capture import protobuf_fields, setup_summary
 from band_access import band_connection
 from input_service import InputService
+from owner_auth import OwnerTrust
 
 
 STREAM_FIELDS = {"raw-emg": (2,), "dial": (3, 6, 8), "inference": (3, 4)}
@@ -54,10 +55,12 @@ def typed_frame(channel, words, payload=b""):
 
 class BandHandshake:
     def __init__(self, emit, query_device_info=False, end_link_setup=False, stream_control=None, query_config=False,
-                 hand=None, clock=time.monotonic):
+                 hand=None, clock=time.monotonic, identity_key=None):
         if hand not in (None, "left", "right"):
             raise ValueError("Hand must be left or right")
         self.emit = emit
+        self.owner = OwnerTrust(identity_key, emit) if identity_key is not None else None
+        self.startup_sent = False
         self.clock = clock
         self.requested_hand = hand
         self.hand = self.hand_error = None
@@ -76,11 +79,12 @@ class BandHandshake:
         self.authenticated_packets = 0
         self.query_sent = False
         self.query_device_info = query_device_info
-        self.end_link_setup = end_link_setup or stream_control is not None or query_config or hand is not None
+        self.end_link_setup = identity_key is not None or end_link_setup or stream_control is not None or query_config or hand is not None
         self.stream_control = stream_control
         self.query_config = query_config or stream_control in ("dial", "inference") or hand is not None
         self.rpc_channels = set()
         self.tx_keys = None
+        self.tx_parameters = None
         self.stream_fields = STREAM_FIELDS.get(stream_control, (2,))
         self.input_service = InputService(self.receive_input, requested_fields=self.stream_fields)
 
@@ -156,13 +160,15 @@ class BandHandshake:
         cipher = Cipher(algorithms.AES(self.tx_keys.encryption), modes.CBC(self.iv)).encryptor()
         ciphertext = cipher.update(padded) + cipher.finalize()
         body = bytes([len(ciphertext) // 16 - 1]) + ciphertext
-        mac = hmac.new(self.tx_keys.mac, self.base.to_bytes(4, "little") + body, hashlib.sha256).digest()[:8]
+        prefix = b"\x02\x02\x00\x00" if self.tx_parameters in (26, 27) else b""
+        mac = hmac.new(self.tx_keys.mac, prefix + self.base.to_bytes(4, "little") + body, hashlib.sha256).digest()[:8]
         self.iv = ciphertext[-16:]
         self.base = (self.base + 1) & 0xffffffff
         return b"\x40" + mac + body
 
     def request(self):
-        payload = field(1, self.public) + field(2, self.challenge) + field(3, 0) + field(4, 31) + field(7, 16)
+        # Capability union of the implemented active modes 3 and 26.
+        payload = field(1, self.public) + field(2, self.challenge) + field(3, 0) + field(4, 31 if self.owner is not None else 27) + field(7, 16)
         return typed_frame(0x8001, [0x81000005, 0x02000001], payload)
 
     def stream_request(self, channel, request_id, enabled=None):
@@ -181,6 +187,30 @@ class BandHandshake:
             self.rpc_channels.add(channel)
             frame = typed_frame(channel, [0x8100ce56, 0x02000314], payload)
         return self.encrypt_frame(frame)
+
+    def start_services(self):
+        if self.startup_sent:
+            return b""
+        self.startup_sent = True
+        outgoing = bytearray()
+        if self.end_link_setup:
+            # Observed EndLinkSetup shape, with a fresh local link UUID.
+            # Enrolled-owner sessions also send a second UUID (field 3).
+            end = typed_frame(0x8001, [0x02001000], field(1, 1) + field(2, os.urandom(16)) + (field(3, os.urandom(16)) if self.owner is not None else b"" ))
+            outgoing.extend(self.encrypt_frame(end))
+            self.emit("link_setup_end_queued", state=1)
+        if self.query_device_info:
+            # Empty device-info RPC observed in the official band session.
+            query = typed_frame(0x8003, [0x8100ce56, 0x02000314], field(1, 1) + field(3, b""))
+            outgoing.extend(self.encrypt_frame(query))
+            self.emit("device_info_query_queued", service=0xce56, message_type=0x314)
+        if self.query_config:
+            outgoing.extend(self.request_config("read"))
+        if self.stream_control:
+            outgoing.extend(self.stream_request(0x8005, 2))
+            if self.stream_control in STREAM_FIELDS and not self.inference_start_pending:
+                outgoing.extend(self.stream_request(0x8005, 3, True))
+        return bytes(outgoing)
 
     def feed(self, data):
         """Return ordered outgoing bytes; completed receive records go to emit."""
@@ -203,46 +233,46 @@ class BandHandshake:
             if summary["message"] == "RequestEncryption":
                 if self.peer_request is not None:
                     raise ValueError("duplicate peer request")
-                if fields.get(3, 0) != 0 or fields.get(4, 0) != 3:
-                    raise ValueError("probe supports only the observed band curve/parameters 0/3")
+                if fields.get(3, 0) != 0:
+                    raise ValueError(f"unsupported peer elliptic curve: {fields.get(3)}")
+                mask = fields.get(4, 0)
+                if self.owner is not None and mask & 27 == 27:
+                    self.tx_parameters = 27
+                elif mask & 26 == 26:
+                    self.tx_parameters = 26
+                elif mask & 3 == 3:
+                    self.tx_parameters = 3
+                else:
+                    raise ValueError(f"band offers AirShield parameter mask {fields.get(4)}; "
+                                     "no implemented mode (3 or 26) is available")
                 self.peer_request = fields
                 payload = (field(1, self.public) + field(2, self.seed) + field(3, self.iv)
-                           + field(4, self.base) + field(5, 3))
+                           + field(4, self.base) + field(5, self.tx_parameters))
                 outgoing.extend(typed_frame(1, [0x02000002], payload))
             else:
-                if self.peer_request is None or fields.get(5, 0) != 3:
-                    raise ValueError("unexpected peer enable or parameters")
+                if self.peer_request is None or fields.get(5, 0) not in (3, 26):
+                    raise ValueError(f"unexpected peer enable or parameters (band enabled {fields.get(5)}; implemented modes are 3 and 26)")
                 if fields[1] != self.peer_request[1]:
                     raise ValueError("peer changed public key between request and enable")
                 peer_key = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), b"\x04" + fields[1])
                 secret = self.private.exchange(ec.ECDH(), peer_key)
-                self.tx_keys = derive_keys(secret, self.peer_request[2], self.seed, 3)
-                rx_keys = derive_keys(secret, self.challenge, fields[2], 3)
-                self.decoder = StreamDecryptor(rx_keys, fields[3], fields.get(4, 0), 3)
+                self.tx_keys = derive_keys(secret, self.peer_request[2], self.seed, self.tx_parameters)
+                rx_keys = derive_keys(secret, self.challenge, fields[2], fields[5])
+                self.decoder = StreamDecryptor(rx_keys, fields[3], fields.get(4, 0), fields[5])
                 # Keep session material in the caller's local capture for replay.
                 self.emit("session_material", shared_secret=secret.hex(), challenge=self.challenge.hex(),
                           seed=self.seed.hex(), iv=self.iv.hex(), base=self.base)
-                self.emit("encryption_negotiated", parameters=3, peer_authenticated=False)
-                outgoing.extend(self.encrypt_frame(typed_frame(0x8002, [0x81000024, 0x02003000])))
-                self.query_sent = True
-                self.emit("identity_query_queued", service=36, message_type=0x3000)
-                if self.end_link_setup:
-                    # Observed EndLinkSetup shape, with a fresh local link UUID.
-                    # Required for the successful direct device-info exchange.
-                    end = typed_frame(0x8001, [0x02001000], field(1, 1) + field(2, os.urandom(16)))
-                    outgoing.extend(self.encrypt_frame(end))
-                    self.emit("link_setup_end_queued", state=1)
-                if self.query_device_info:
-                    # Empty device-info RPC observed in the official band session.
-                    query = typed_frame(0x8003, [0x8100ce56, 0x02000314], field(1, 1) + field(3, b""))
-                    outgoing.extend(self.encrypt_frame(query))
-                    self.emit("device_info_query_queued", service=0xce56, message_type=0x314)
-                if self.query_config:
-                    outgoing.extend(self.request_config("read"))
-                if self.stream_control:
-                    outgoing.extend(self.stream_request(0x8005, 2))
-                    if self.stream_control in STREAM_FIELDS and not self.inference_start_pending:
-                        outgoing.extend(self.stream_request(0x8005, 3, True))
+                self.emit("encryption_negotiated", parameters=fields[5], tx_parameters=self.tx_parameters,
+                          peer_authenticated=False)
+                if self.owner is not None:
+                    proof = self.owner.proof(self.peer_request[2], self.peer_request[1], self.seed, self.public)
+                    outgoing.extend(self.encrypt_frame(typed_frame(0x8002, [0x81000024, 0x02001000], proof)))
+                    self.emit("owner_trust_proof_sent", role=2)
+                else:
+                    outgoing.extend(self.encrypt_frame(typed_frame(0x8002, [0x81000024, 0x02003000])))
+                    self.query_sent = True
+                    self.emit("identity_query_queued", service=36, message_type=0x3000)
+                    outgoing.extend(self.start_services())
         if self.decoder is not None:
             data = bytes(self.pending)
             self.pending.clear()
@@ -250,6 +280,11 @@ class BandHandshake:
                 if isinstance(record, AuthenticatedPacket):
                     self.authenticated_packets += 1
                     self.emit("authenticated_packet", counter=record.counter, plaintext=record.plaintext.hex())
+                    if self.owner is not None:
+                        for channel, words, payload in self.owner.feed(record.plaintext):
+                            outgoing.extend(self.encrypt_frame(typed_frame(channel, words, payload)))
+                        if self.owner.ready:
+                            outgoing.extend(self.start_services())
                     self.input_service.feed(record.plaintext)
                 else:
                     self.emit("unauthenticated_record", kind=record.kind, channel=record.channel, payload=record.payload.hex())
@@ -261,6 +296,10 @@ class BandHandshake:
         if self.decoder is None:
             raise ValueError(f"initial encryption exchange incomplete; {len(self.pending)} buffered bytes")
         self.decoder.finish()
+        if self.owner is not None:
+            self.owner.frames.finish()
+            if not self.owner.ready:
+                raise ValueError("Owner trust/link setup incomplete")
 
 
 def run_probe(args, emit):
@@ -319,11 +358,13 @@ def run_probe(args, emit):
                 self.failure = str(error)
                 return
             value = bytes(characteristic.value())
-            if len(value) != 2 or int.from_bytes(value, "little") != 255:
+            if len(value) != 2:
                 self.failure = "unexpected PSM characteristic"
                 return
-            emit("psm_discovered", psm=255)
-            peripheral.openL2CAPChannel_(255)
+            # Read the advertised PSM: older firmware uses 255, newer firmware 129.
+            psm = int.from_bytes(value, "little")
+            emit("psm_discovered", psm=psm)
+            peripheral.openL2CAPChannel_(psm)
 
         def peripheral_didOpenL2CAPChannel_error_(self, peripheral, channel, error):
             if error:
@@ -342,7 +383,8 @@ def run_probe(args, emit):
     delegate.outgoing = bytearray()
     delegate.handshake = BandHandshake(emit, query_device_info=args.query_device_info,
                                        end_link_setup=args.end_link_setup, stream_control=args.stream_control,
-                                       query_config=args.query_config, hand=args.hand)
+                                       query_config=args.query_config, hand=args.hand,
+                                       identity_key=serialization.load_pem_private_key(args.identity_key.read_bytes(), None) if getattr(args, "identity_key", None) else None)
     central = CBCentralManager.alloc().initWithDelegate_queue_(delegate, None)
     deadline = time.monotonic() + args.seconds
     stop_queued = False
@@ -386,6 +428,7 @@ def run_probe(args, emit):
                 continue
             incoming, outgoing = delegate.channel.inputStream(), delegate.channel.outputStream()
             if (args.stream_control in STREAM_FIELDS and delegate.handshake.tx_keys is not None
+                    and delegate.handshake.startup_sent
                     and not stop_queued and time.monotonic() >= deadline - 3):
                 delegate.outgoing.extend(delegate.handshake.stream_request(0x8005, 4, False))
                 stop_queued = True
@@ -422,7 +465,7 @@ def run_probe(args, emit):
         if delegate.outgoing:
             raise ValueError(f"{len(delegate.outgoing)} outgoing bytes not accepted by stream")
         emit("probe_result", authenticated_packets=delegate.handshake.authenticated_packets,
-             identity_authenticated=False, semg_samples_identified=bool(delegate.handshake.input_service.sample_frames),
+             identity_authenticated=False, owner_identity_accepted=bool(delegate.handshake.owner and delegate.handshake.owner.accepted), semg_samples_identified=bool(delegate.handshake.input_service.sample_frames),
              raw_emg_messages=delegate.handshake.input_service.raw_messages,
              sample_frames=delegate.handshake.input_service.sample_frames,
              missing_batches=delegate.handshake.input_service.missing_batches,
@@ -460,6 +503,7 @@ if __name__ == "__main__":
     parser.add_argument("--seconds", type=float, default=35, help="time limit; sensor modes start a fresh interval when samples arrive")
     parser.add_argument("--dial-settings", type=Path, help="local JSON response/sensitivity settings, watched during gesture modes")
     parser.add_argument("--query-device-info", action="store_true", help="read input-service metadata; pair with --end-link-setup")
+    parser.add_argument("--identity-key", type=Path, help="local PEM for an already enrolled P-256 band identity; never enrolls or resets")
     parser.add_argument("--end-link-setup", action="store_true", help="complete link setup before input-service requests")
     parser.add_argument("--stream-control", choices=("query", *STREAM_FIELDS),
                         help="query flags, raw EMG, gestures/motion (dial), or experimental raw inference; disables requested streams before the deadline")

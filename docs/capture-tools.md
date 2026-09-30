@@ -195,3 +195,40 @@ python3 instrumentation/mac_band_probe.py BAND_COREBLUETOOTH_UUID --query-device
 ```
 
 Full events stay in the capture; a curated `.live.json` sidecar supplies the fast dashboard hand endpoint. Gyro is type `0x0200020f`, quaternion `0x02000212`, recognized gestures `0x0200020d`. `host_loop_delay` records receive-loop pauses over 100 ms. Probe completion now requires clean framing and explicit disable acknowledgements for the requested streams. The vendored Three.js files include their license and source information under `dashboard/static/vendor/`.
+
+
+## Firmware 5c2b1ca1f73b+
+
+The Mac probe reads the advertised L2CAP PSM (129 on this firmware) and supports
+AirShield 26/27. These modes use the raw ECDH secret for the existing HKDF
+construction, reuse the encryption key for HMAC, and prepend `02020000` to the
+MAC input. Owner sessions were verified with host TX 27 and band TX 26.
+
+An already paired band requires its enrolled P-256 owner identity. Supply an
+unencrypted PEM private key stored locally with restricted permissions:
+
+```sh
+python instrumentation/mac_band_probe.py BAND_UUID \
+  --identity-key /absolute/path/to/owner.pem --query-device-info \
+  --stream-control dial --seconds 60 --output captures/owner-dial.jsonl
+```
+
+The key must already be enrolled on that band; generating a new key does not
+work. Obtaining it is outside this change (validation used the user's rooted
+Android companion). The probe does not enroll or reset the band. It waits for
+owner-proof acceptance and peer EndLinkSetup before starting input requests.
+Peer identity is not cryptographically verified; owner acceptance is reported
+separately from peer authentication. Keep keys and captures private.
+
+Keep the glasses and companion phone Bluetooth off during direct Mac use.
+Background BLE scanning can retain the phone connection even when its toggle
+appears off. Pairing can change the Mac's band UUID; rescan if needed. Paired
+bands may advertise without a name, so discovery also recognizes the observed
+FD5F/manufacturer advertisement combination as a candidate.
+
+Hardware validation on `5c2b1ca1f73b+`: device-info queries, live wrist motion,
+index/middle presses and releases, and raw EMG worked directly from the Mac
+with the glasses off. One EMG run decoded 14,240 sample frames and reported
+14 missing batches; streaming disable was acknowledged. Full-block DataX
+padding is now handled, including across fragments. This does not establish
+lossless streaming or firmware compatibility beyond the tested device.

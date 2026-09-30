@@ -131,33 +131,65 @@ class MacBandProbeTests(unittest.TestCase):
                 self.assertFalse(states[-1]['engaged'])
 
     def test_fragmented_exchange_and_independently_encrypted_peer_reply(self):
+        for mode in (3, 26):
+            with self.subTest(mode=mode):
+                self.setUp()
+                self.check_fragmented_exchange(mode)
+
+    def check_fragmented_exchange(self, mode):
+        self.request = self.request[:-1] + bytes([3 if mode == 3 else 27])
+        self.enable = self.enable[:-1] + bytes([mode])
         request = self.probe.request()
         self.assertEqual(request[:12].hex(), "806280018100000502000001")
         our = {n: v for n, w, v in protobuf_fields(request[12:])}
+        self.assertEqual(our[4], 27)
         outgoing = b"".join(self.probe.feed(bytes([byte])) for byte in self.request + self.enable)
         enable_size = (int.from_bytes(outgoing[:2], "big") & 0x7fff) + 4
         local_enable = {n: v for n, w, v in protobuf_fields(outgoing[8:enable_size])}
         local_public = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), b"\x04" + our[1])
         secret = self.peer_private.exchange(ec.ECDH(), local_public)
-        keys = derive_keys(secret, self.peer_challenge, local_enable[2], 3)
-        decoder = StreamDecryptor(keys, local_enable[3], local_enable[4], 3)
+        keys = derive_keys(secret, self.peer_challenge, local_enable[2], mode)
+        decoder = StreamDecryptor(keys, local_enable[3], local_enable[4], mode)
         decoded = list(decoder.feed(outgoing[enable_size:]))
         decoder.finish()
         self.assertEqual(decoded[0].plaintext.hex(), "800880028100002402003000c4c4c4c4")
         self.assertEqual(local_enable[1], our[1])
-        self.assertEqual(local_enable[5], 3)
+        self.assertEqual(local_enable[5], mode)
 
-        peer_keys = derive_keys(secret, our[2], self.peer_seed, 3)
+        peer_keys = derive_keys(secret, our[2], self.peer_seed, mode)
         expected = bytes.fromhex("8004800203003000") + bytes([0xc8]) * 8
         cipher = Cipher(algorithms.AES(peer_keys.encryption), modes.CBC(self.peer_iv)).encryptor()
         ciphertext = cipher.update(expected) + cipher.finalize()
         body = b"\x00" + ciphertext
-        mac = hmac.new(peer_keys.mac, (42).to_bytes(4, "little") + body, hashlib.sha256).digest()[:8]
+        prefix = bytes.fromhex("02020000") if mode == 26 else b""
+        mac = hmac.new(peer_keys.mac, prefix + (42).to_bytes(4, "little") + body, hashlib.sha256).digest()[:8]
         self.assertEqual(self.probe.feed(b"\x40" + mac + body), b"")
         self.probe.finish()
         self.assertEqual(self.probe.authenticated_packets, 1)
         received = [values for event, values in self.events if event == "authenticated_packet"]
         self.assertEqual(received, [{"counter": 42, "plaintext": expected.hex()}])
+
+    def test_peer_capability_superset_can_select_implemented_mode(self):
+        request = self.request[:-1] + bytes([27])
+        outgoing = self.probe.feed(request + self.enable)
+        self.assertTrue(outgoing)
+        self.assertIsNotNone(self.probe.decoder)
+
+    def test_unverified_selected_mode_never_sends_encrypted_queries(self):
+        self.probe.feed(self.request[:-1] + bytes([27]))
+        with self.assertRaisesRegex(ValueError, "band enabled 31"):
+            self.probe.feed(self.enable[:-1] + bytes([31]))
+        self.assertIsNone(self.probe.decoder)
+        self.assertIsNone(self.probe.tx_keys)
+        self.assertFalse(self.probe.query_sent)
+
+    def test_peer_without_required_capabilities_is_rejected(self):
+        for mask in (0, 1, 2, 8, 16):
+            with self.subTest(mask=mask):
+                self.setUp()
+                with self.assertRaisesRegex(ValueError, "parameter mask"):
+                    self.probe.feed(self.request[:-1] + bytes([mask]))
+                self.assertIsNone(self.probe.peer_request)
 
     def test_enable_before_request_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "unexpected peer enable"):

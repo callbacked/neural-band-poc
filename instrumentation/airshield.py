@@ -1,4 +1,4 @@
-"""AirShield parameters 3/31, verified against companion-app keys and packet MACs.
+"""AirShield parameters 3/26/27/31, verified against packet MACs.
 
 This module authenticates transport packets. It does not implement device identity
 authentication, the complete DataX grammar, or a gesture subscription.
@@ -23,7 +23,7 @@ def derive_keys(shared_secret, receiver_challenge, sender_seed, parameters):
     """Derive one direction's keys from the raw 32-byte P-256 shared secret."""
     if (len(shared_secret), len(receiver_challenge), len(sender_seed)) != (32, 16, 32):
         raise ValueError("expected a 32-byte secret, 16-byte challenge, and 32-byte seed")
-    if parameters not in (3, 31):
+    if parameters not in (3, 26, 27, 31):
         raise ValueError(f"unverified AirShield parameters: {parameters}")
 
     def sha(data):
@@ -37,6 +37,8 @@ def derive_keys(shared_secret, receiver_challenge, sender_seed, parameters):
         encryption = expand(hashed_secret, sha(hashed_secret + receiver_challenge + sender_seed))
         return DirectionalKeys(encryption, encryption)
     encryption = expand(shared_secret, sha(receiver_challenge + sender_seed))
+    if parameters in (26, 27):
+        return DirectionalKeys(encryption, encryption)
     mac = expand(shared_secret, sha(sender_seed + receiver_challenge + b"hmac_derive"))
     return DirectionalKeys(encryption, mac)
 
@@ -67,7 +69,7 @@ class StreamDecryptor:
     """
 
     def __init__(self, keys, iv, base, parameters):
-        if parameters not in (3, 31):
+        if parameters not in (3, 26, 27, 31):
             raise ValueError(f"unverified AirShield parameters: {parameters}")
         if len(keys.encryption) != 32 or len(keys.mac) != 32 or len(iv) != 16:
             raise ValueError("invalid key or IV length")
@@ -76,7 +78,7 @@ class StreamDecryptor:
         self.keys = keys
         self.iv = iv
         self.counter = base
-        self.prefix = b"\x02\x02\x00\x00" if parameters == 31 else b""
+        self.prefix = b"\x02\x02\x00\x00" if parameters in (26, 27, 31) else b""
         self.buffer = bytearray()
 
     def feed(self, data):

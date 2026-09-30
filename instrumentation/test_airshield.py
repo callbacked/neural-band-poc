@@ -29,6 +29,36 @@ class AirShieldTests(unittest.TestCase):
         tag = hmac.new(tx.mac, bytes.fromhex("02020000808b8dba") + packet[9:], hashlib.sha256).digest()[:8]
         self.assertEqual(tag, packet[1:9])
 
+    def test_parameter_26_key_reuse_and_framing(self):
+        # Public parameter-31 encryption vector; parameter 26 reuses it for MAC.
+        secret = bytes.fromhex("f2f6f1f1a56fb52122ec338ed887338b42b976290253dbd6f48f3cc0b15b2ba8")
+        keys = derive_keys(secret, bytes.fromhex("c75051fb3e50142ba10c15a023777c6b"), b"A" * 32, 26)
+        self.assertEqual(keys.encryption.hex(), "d70b81653601bbc46f13c6749324fa2b680af0064592a2c663a0891d7a43875d")
+        self.assertEqual(keys.mac, keys.encryption)
+        # Re-tag fixed CBC fixtures independently, including counter wrap/chaining.
+        keys = DirectionalKeys(bytes(range(32)), bytes(range(32)))
+        packets = []
+        for counter, fixture in ((0xffffffff, self.first), (0, self.second)):
+            tag = hmac.new(keys.mac, bytes.fromhex("02020000") + counter.to_bytes(4, "little")
+                           + fixture[9:], hashlib.sha256).digest()[:8]
+            packets.append(b"\x40" + tag + fixture[9:])
+        for step in (1, 4096):
+            decoder = StreamDecryptor(keys, bytes(range(16)), 0xffffffff, 26)
+            data, records = b"".join(packets), []
+            for start in range(0, len(data), step):
+                records.extend(decoder.feed(data[start:start + step]))
+            decoder.finish()
+            self.assertEqual([r.plaintext for r in records],
+                             [b"first block.....second block....", b"last block......"])
+        for index in (1, 12):
+            decoder = StreamDecryptor(keys, bytes(range(16)), 0xffffffff, 26)
+            changed = bytearray(packets[0])
+            changed[index] ^= 1
+            with self.assertRaisesRegex(ValueError, "MAC failed"):
+                list(decoder.feed(changed))
+            self.assertEqual(decoder.counter, 0xffffffff)
+            self.assertEqual(decoder.iv, bytes(range(16)))
+
     def test_fragmentation_relay_and_counter_wrap(self):
         relay_payload = bytes(range(134))
         relay = b"\x01\x85" + relay_payload

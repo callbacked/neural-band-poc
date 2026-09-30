@@ -28,7 +28,7 @@ class DataXStream:
         # grammar remains unverified; file length, Adler-32 and zlib checks below
         # must all pass before any telemetry events are released.
         count = plain[-1] - 0xc0
-        if 1 <= count <= 15 and plain[-count:] == bytes([plain[-1]]) * count:
+        if 1 <= count <= 16 and plain[-count:] == bytes([plain[-1]]) * count:
             plain = plain[:-count]
         self.pending.extend(plain)
         while len(self.pending) >= 4:
